@@ -154,7 +154,7 @@ jobs:
               PGPASSWORD="$DATABASE_PASSWORD" createdb -h "$DATABASE_HOST" -p "${DATABASE_PORT:-5432}" -U "$DATABASE_USER" "$DATABASE_NAME"
             fi
 
-            pnpm migration:run:dev
+            pnpm migration:run:prod
 
             export PM2_APP_NAME="$APP_NAME"
             if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
