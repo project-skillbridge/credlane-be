@@ -26,6 +26,7 @@
     "migration:generate": "pnpm typeorm migration:generate",
     "migration:create": "typeorm-ts-node-commonjs migration:create",
     "migration:run": "pnpm typeorm migration:run",
+    "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
     "migration:revert": "pnpm typeorm migration:revert",
     "migration:show": "pnpm typeorm migration:show",
     "schema:drop": "pnpm typeorm schema:drop",
