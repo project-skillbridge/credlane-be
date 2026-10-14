@@ -14,7 +14,7 @@ A production-ready NestJS 11 starter with PostgreSQL, JWT auth, the repository p
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24+
 - pnpm (or npm/yarn — adjust commands accordingly)
 - A running PostgreSQL 14+ instance
 
@@ -47,33 +47,36 @@ Open `http://localhost:3000/docs` for the Swagger UI.
 ## Scripts
 
 ### App
-| Script | Purpose |
-|---|---|
-| `pnpm start:dev` | Run with watch mode |
-| `pnpm start:debug` | Run with `--inspect` debugger |
-| `pnpm start:prod` | Run the compiled `dist/main.js` |
-| `pnpm build` | Compile to `dist/` |
-| `pnpm lint` | Lint and auto-fix |
-| `pnpm format` | Prettier |
-| `pnpm test` | Unit tests |
-| `pnpm test:e2e` | End-to-end tests |
-| `pnpm test:cov` | Coverage report |
+
+| Script             | Purpose                         |
+| ------------------ | ------------------------------- |
+| `pnpm start:dev`   | Run with watch mode             |
+| `pnpm start:debug` | Run with `--inspect` debugger   |
+| `pnpm start:prod`  | Run the compiled `dist/main.js` |
+| `pnpm build`       | Compile to `dist/`              |
+| `pnpm lint`        | Lint and auto-fix               |
+| `pnpm format`      | Prettier                        |
+| `pnpm test`        | Unit tests                      |
+| `pnpm test:e2e`    | End-to-end tests                |
+| `pnpm test:cov`    | Coverage report                 |
 
 ### Database
-| Script | Purpose |
-|---|---|
-| `pnpm migration:run` | Apply all pending migrations |
-| `pnpm migration:revert` | Revert the most recent migration |
-| `pnpm migration:show` | List migrations and their status |
+
+| Script                                                   | Purpose                                      |
+| -------------------------------------------------------- | -------------------------------------------- |
+| `pnpm migration:run`                                     | Apply all pending migrations                 |
+| `pnpm migration:revert`                                  | Revert the most recent migration             |
+| `pnpm migration:show`                                    | List migrations and their status             |
 | `pnpm migration:generate src/database/migrations/<Name>` | Diff entities vs DB and generate a migration |
-| `pnpm migration:create src/database/migrations/<Name>` | Create an empty migration |
-| `pnpm schema:drop` | Drop all tables (destructive — dev only) |
-| `pnpm seed` | Run all seeders |
-| `pnpm db:reset` | Drop schema, run migrations, run seeders |
+| `pnpm migration:create src/database/migrations/<Name>`   | Create an empty migration                    |
+| `pnpm schema:drop`                                       | Drop all tables (destructive — dev only)     |
+| `pnpm seed`                                              | Run all seeders                              |
+| `pnpm db:reset`                                          | Drop schema, run migrations, run seeders     |
 
 ### Question bank
-| Script | Purpose |
-|---|---|
+
+| Script                        | Purpose                                   |
+| ----------------------------- | ----------------------------------------- |
 | `pnpm generate:question-bank` | Run the scheduled question-bank generator |
 
 Example dry run:
@@ -164,13 +167,13 @@ const port = env.PORT; // typed as number
 
 ### Auth flow
 
-| Endpoint | Method | Auth | Purpose |
-|---|---|---|---|
-| `/auth/register` | POST | public | Create account, returns access + refresh tokens |
-| `/auth/login` | POST | public | Returns access + refresh tokens |
-| `/auth/refresh` | POST | public | Issue a new access token from a refresh token |
-| `/auth/logout` | POST | bearer | Revoke the current refresh token |
-| `/auth/me` | GET | bearer | Return current user |
+| Endpoint         | Method | Auth   | Purpose                                         |
+| ---------------- | ------ | ------ | ----------------------------------------------- |
+| `/auth/register` | POST   | public | Create account, returns access + refresh tokens |
+| `/auth/login`    | POST   | public | Returns access + refresh tokens                 |
+| `/auth/refresh`  | POST   | public | Issue a new access token from a refresh token   |
+| `/auth/logout`   | POST   | bearer | Revoke the current refresh token                |
+| `/auth/me`       | GET    | bearer | Return current user                             |
 
 The global `JwtAuthGuard` protects every route by default. Decorate handlers (or controllers) with `@Public()` to opt out.
 
@@ -204,14 +207,14 @@ Errors go through `HttpExceptionFilter`:
 
 See `.env.example` for the full list. Critical ones:
 
-| Variable | Notes |
-|---|---|
-| `DATABASE_*` | host/port/user/password/name |
-| `DATABASE_SYNC` | **Always `false` in non-dev** — use migrations |
-| `DATABASE_SSL` | `true` for managed providers (Neon, Supabase, RDS) |
-| `JWT_ACCESS_SECRET` | Min 32 chars |
-| `JWT_REFRESH_SECRET` | Min 32 chars, must differ from access secret |
-| `SWAGGER_ENABLED` | Set to `false` in production if you don't want public docs |
+| Variable             | Notes                                                      |
+| -------------------- | ---------------------------------------------------------- |
+| `DATABASE_*`         | host/port/user/password/name                               |
+| `DATABASE_SYNC`      | **Always `false` in non-dev** — use migrations             |
+| `DATABASE_SSL`       | `true` for managed providers (Neon, Supabase, RDS)         |
+| `JWT_ACCESS_SECRET`  | Min 32 chars                                               |
+| `JWT_REFRESH_SECRET` | Min 32 chars, must differ from access secret               |
+| `SWAGGER_ENABLED`    | Set to `false` in production if you don't want public docs |
 
 ## License
 
