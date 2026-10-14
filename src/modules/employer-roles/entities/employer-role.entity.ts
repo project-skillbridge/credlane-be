@@ -11,6 +11,15 @@ import {
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 import { EmployerAssessment } from '../../employer-assessments/entities/employer-assessment.entity';
+import type {
+  TalentRoleTrack,
+  TalentEducationLevel,
+} from '../../talent/talent.constants';
+import {
+  TALENT_ROLE_TRACKS,
+  TALENT_EDUCATION_LEVELS,
+} from '../../talent/talent.constants';
+import { VerifiedLevel } from '../../assessments/entities/assessment-question.entity';
 
 export enum EmployerRoleStatus {
   ACTIVE = 'active',
@@ -43,6 +52,18 @@ export class EmployerRole {
   @Column({ type: 'varchar', length: 255 })
   title: string;
 
+  @ApiProperty({
+    example: 'backend_developer',
+    enum: TALENT_ROLE_TRACKS,
+    description: 'Canonical talent track slug this role maps to',
+  })
+  @Column({
+    type: 'enum',
+    enum: TALENT_ROLE_TRACKS,
+    enumName: 'talent_role_track_enum',
+  })
+  track: TalentRoleTrack;
+
   @ApiProperty({ example: 'Engineering' })
   @Column({ type: 'varchar', length: 255 })
   category: string;
@@ -63,9 +84,31 @@ export class EmployerRole {
   @Column({ type: 'varchar', length: 50, nullable: true })
   work_arrangement: string | null;
 
-  @ApiPropertyOptional({ example: 'Bachelor' })
-  @Column({ type: 'varchar', length: 100, nullable: true })
-  education: string | null;
+  @ApiPropertyOptional({
+    example: 'bachelor',
+    enum: TALENT_EDUCATION_LEVELS,
+    description: 'Minimum education level required',
+  })
+  @Column({
+    type: 'enum',
+    enum: TALENT_EDUCATION_LEVELS,
+    enumName: 'talent_education_level_enum',
+    nullable: true,
+  })
+  education: TalentEducationLevel | null;
+
+  @ApiPropertyOptional({
+    example: 'mid',
+    enum: VerifiedLevel,
+    description: 'Target experience level for this role',
+  })
+  @Column({
+    type: 'enum',
+    enum: VerifiedLevel,
+    enumName: 'employer_role_level_enum',
+    nullable: true,
+  })
+  level: VerifiedLevel | null;
 
   @ApiPropertyOptional({ type: [String] })
   @Column({ type: 'text', array: true, nullable: true })

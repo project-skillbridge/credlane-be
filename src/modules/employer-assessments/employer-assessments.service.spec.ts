@@ -6,6 +6,7 @@ import {
   EmployerAssessment,
   EmployerAssessmentExperienceLevel,
   EmployerAssessmentQuestionSource,
+  EmployerAssessmentType,
 } from './entities/employer-assessment.entity';
 import {
   EmployerAssessmentQuestion,
@@ -15,6 +16,7 @@ import {
   EmployerAssessmentDeliveryMode,
   EmployerAssessmentInvite,
 } from './entities/employer-assessment-invite.entity';
+import type { TalentRoleTrack } from '@modules/talent/talent.constants';
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
 import { AssessmentQuestion } from '../assessments/entities/assessment-question.entity';
@@ -227,7 +229,8 @@ describe('EmployerAssessmentsService', () => {
   describe('createAssessment', () => {
     const baseDto = {
       title: 'Frontend Assessment',
-      roleTrack: 'frontend_developer',
+      type: EmployerAssessmentType.EXTERNAL,
+      roleTrack: 'frontend_developer' as TalentRoleTrack,
       experienceLevel: EmployerAssessmentExperienceLevel.MID,
       timeLimitMinutes: 30,
       passingThreshold: 70,
@@ -1239,7 +1242,8 @@ describe('EmployerAssessmentsService', () => {
   describe('createAssessment (credlane_bank validation)', () => {
     const credlaneBankDto = {
       title: 'Backend Assessment',
-      roleTrack: 'backend_developer',
+      type: EmployerAssessmentType.EXTERNAL,
+      roleTrack: 'backend_developer' as TalentRoleTrack,
       experienceLevel: EmployerAssessmentExperienceLevel.MID,
       timeLimitMinutes: 30,
       passingThreshold: 70,

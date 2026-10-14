@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=24.0.0",
     "pnpm": ">=9.0.0"
   },
   "scripts": {
@@ -26,6 +26,7 @@
     "migration:generate": "pnpm typeorm migration:generate",
     "migration:create": "typeorm-ts-node-commonjs migration:create",
     "migration:run": "pnpm typeorm migration:run",
+    "migration:run:prod": "typeorm migration:run -d dist/database/data-source.js",
     "migration:revert": "pnpm typeorm migration:revert",
     "migration:show": "pnpm typeorm migration:show",
     "schema:drop": "pnpm typeorm schema:drop",
@@ -69,6 +70,7 @@
     "helmet": "^8.1.0",
     "multer": "^2.1.1",
     "nestjs-pino": "^4.6.1",
+    "node": "^26.11.1",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "passport-jwt": "^4.0.1",

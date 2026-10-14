@@ -130,9 +130,7 @@ export type OfferStatusChangeEvent = {
   candidateUserId: string;
   candidateName: string;
   roleTitle: string;
-  status:
-    | OfferStatus.ACCEPTED
-    | OfferStatus.DECLINED;
+  status: OfferStatus.ACCEPTED | OfferStatus.DECLINED;
   respondedAt: string;
 };
 
@@ -304,21 +302,6 @@ export class OffersService {
       await this.verificationService.assertEmployerVerified(employerUserId);
     }
 
-    // Validate candidate is Job Ready
-    const poolProfile = await this.poolProfileRepo.findOne({
-      where: { candidate_id: candidateUserId },
-    });
-
-    if (!poolProfile) {
-      throw new NotFoundError('Candidate not found');
-    }
-
-    if (poolProfile.tier !== 'job_ready') {
-      throw new ForbiddenError(
-        'Offers can only be sent to Job Ready candidates',
-      );
-    }
-
     const role =
       preResolvedRole !== undefined
         ? preResolvedRole
@@ -326,6 +309,28 @@ export class OffersService {
             employerUserId,
             dto.roleId,
           );
+
+    const poolProfile = await this.poolProfileRepo.findOne({
+      where: { candidate_id: candidateUserId, track: role?.track },
+    });
+
+    if (!poolProfile) {
+      throw new NotFoundError('Candidate not found');
+    }
+
+    // Validate candidate is Job Ready
+    if (poolProfile.tier !== 'job_ready') {
+      throw new ForbiddenError(
+        'Offers can only be sent to Job Ready candidates',
+      );
+    }
+
+    // Validate candidate matches the track
+    if (poolProfile.track !== role?.track) {
+      throw new ForbiddenError(
+        'Offers can only be sent to candidates that match this role.',
+      );
+    }
 
     const offerDetails = this.resolveOfferDetails(dto, role);
 
@@ -847,7 +852,9 @@ export class OffersService {
       throw new NotFoundError('Offer not found');
     }
     if (offer.status !== OfferStatus.ACCEPTED) {
-      throw new BadRequestError('Only accepted interview invites can request a call');
+      throw new BadRequestError(
+        'Only accepted interview invites can request a call',
+      );
     }
     if (offer.interview_link) {
       throw new BadRequestError('This interview invite already has a link');
@@ -1098,5 +1105,4 @@ export class OffersService {
       { status: OfferStatus.EXPIRED },
     );
   }
-
 }

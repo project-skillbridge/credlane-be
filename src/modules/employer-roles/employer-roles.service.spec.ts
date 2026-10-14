@@ -90,6 +90,7 @@ describe('EmployerRolesService', () => {
 
     const result = await service.create('employer-1', {
       title: ' Backend Engineer ',
+      track: 'backend_developer',
       category: 'Engineering',
       description: ' Build APIs ',
       employmentType: 'Full-time',
@@ -124,6 +125,7 @@ describe('EmployerRolesService', () => {
     await expect(
       service.create('employer-1', {
         title: 'Role',
+        track: 'backend_developer',
         category: 'Engineering',
         salaryMin: 3000,
         salaryMax: 2000,

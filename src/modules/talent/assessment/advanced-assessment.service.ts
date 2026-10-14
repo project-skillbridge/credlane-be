@@ -81,7 +81,7 @@ import {
 import { AdvancedAssessmentQueueService } from './advanced-assessment-queue.service';
 import type { AdvancedAssessmentSubmitJobData } from './advanced-assessment-submit.types';
 
-const ADVANCED_ASSESSMENT_DURATION_MINUTES = 25;
+const ADVANCED_ASSESSMENT_DURATION_MINUTES = 60;
 const RETAKE_GATE_DAYS = 14;
 const ABNORMAL_LONG_TEXT_SECONDS = 5;
 const ADVANCED_SHORT_TEXT_MIN_CHARS = 10;

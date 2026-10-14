@@ -194,7 +194,7 @@ export class EmployerAssessmentsService {
       }
       // Validate that catalogue item matches the dto role_track and experience_level
       if (
-        catalogueItem.role_track !== dto.roleTrack.trim() ||
+        catalogueItem.role_track !== dto.roleTrack ||
         catalogueItem.experience_level !== dto.experienceLevel
       ) {
         throw new BadRequestError(
@@ -460,7 +460,10 @@ export class EmployerAssessmentsService {
       }
 
       const existing = await this.inviteRepo.find({
-        where: { assessment_id: assessmentId, candidate_user_id: In(talentIds) },
+        where: {
+          assessment_id: assessmentId,
+          candidate_user_id: In(talentIds),
+        },
       });
       const alreadyInvited = new Set(
         existing.map((invite) => invite.candidate_user_id),
@@ -505,7 +508,9 @@ export class EmployerAssessmentsService {
     const existingInvites = await this.externalInviteRepo.find({
       where: { assessment_id: assessmentId, email: In(emails) },
     });
-    const alreadyInvited = new Set(existingInvites.map((invite) => invite.email));
+    const alreadyInvited = new Set(
+      existingInvites.map((invite) => invite.email),
+    );
     const nextEmails = emails.filter((email) => !alreadyInvited.has(email));
 
     if (nextEmails.length > 0) {

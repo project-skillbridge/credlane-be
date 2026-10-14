@@ -60,14 +60,6 @@ export class EmployerRolesService {
     }
 
     const title = dto.title.trim();
-    const existing = await this.roleRepo.findOne({
-      where: { employer_user_id: employerUserId, title },
-    });
-    if (existing) {
-      throw new BadRequestException(
-        `A role with the title "${title}" already exists.`,
-      );
-    }
 
     const rawKeywords =
       dto.keywords && dto.keywords.length > 0
@@ -79,12 +71,14 @@ export class EmployerRolesService {
     const role = this.roleRepo.create({
       employer_user_id: employerUserId,
       title,
+      track: dto.track,
       category: dto.category.trim(),
       description,
       jd_file_url: jdFileUrl ?? null,
       employment_type: dto.employmentType ?? null,
       work_arrangement: dto.workArrangement ?? null,
-      education: dto.education?.trim() ?? null,
+      education: dto.education,
+      level: dto.level,
       keywords: keywords.length ? keywords : null,
       salary_min: dto.salaryMin ?? null,
       salary_max: dto.salaryMax ?? null,
@@ -152,16 +146,6 @@ export class EmployerRolesService {
 
     if (dto.title !== undefined) {
       const title = dto.title.trim();
-      if (title !== role.title) {
-        const conflict = await this.roleRepo.findOne({
-          where: { employer_user_id: employerUserId, title },
-        });
-        if (conflict) {
-          throw new BadRequestException(
-            `A role with the title "${title}" already exists.`,
-          );
-        }
-      }
       role.title = title;
     }
     if (dto.category !== undefined) role.category = dto.category.trim();
@@ -192,7 +176,6 @@ export class EmployerRolesService {
     if (dto.workArrangement !== undefined) {
       role.work_arrangement = dto.workArrangement;
     }
-    if (dto.education !== undefined) role.education = dto.education?.trim();
     if (dto.keywords !== undefined || dto.keyword !== undefined) {
       const raw =
         dto.keywords && dto.keywords.length > 0
@@ -230,7 +213,8 @@ export class EmployerRolesService {
         (err as QueryFailedError & { code?: string }).code === '23505'
       ) {
         throw new BadRequestException(
-          `A role with the title "${role.title}" already exists.`,
+          `A role with the title "${role.title}" already exists.`, // this should
+          // never throw because there's no unique constraint on role.title
         );
       }
       throw err;
@@ -325,12 +309,18 @@ export class EmployerRolesService {
 
     const [bestMatchCount, otherCount, interestedCount, totalCount] =
       await Promise.all([
-        baseQb.clone().andWhere('pool.score >= :bestMatchScore', {
-          bestMatchScore: 80,
-        }).getCount(),
-        baseQb.clone().andWhere('pool.score < :bestMatchScore', {
-          bestMatchScore: 80,
-        }).getCount(),
+        baseQb
+          .clone()
+          .andWhere('pool.score >= :bestMatchScore', {
+            bestMatchScore: 80,
+          })
+          .getCount(),
+        baseQb
+          .clone()
+          .andWhere('pool.score < :bestMatchScore', {
+            bestMatchScore: 80,
+          })
+          .getCount(),
         baseQb.clone().andWhere('interest.id IS NOT NULL').getCount(),
         baseQb.clone().getCount(),
       ]);
@@ -397,7 +387,10 @@ export class EmployerRolesService {
       invites.map((invite) => invite.candidate_user_id),
     );
     const submissionByCandidate = new Map(
-      submissions.map((submission) => [submission.candidate_user_id, submission]),
+      submissions.map((submission) => [
+        submission.candidate_user_id,
+        submission,
+      ]),
     );
     const offerByCandidate = new Map(
       offers.map((offer) => [offer.candidate_user_id, offer]),
@@ -452,7 +445,8 @@ export class EmployerRolesService {
           assessment_result: assessmentResult,
           offer_status: offerStatus,
           interview_link: offer?.interview_link ?? null,
-          updated_at: offer?.updated_at ?? submission?.completed_at ?? row.interestedAt,
+          updated_at:
+            offer?.updated_at ?? submission?.completed_at ?? row.interestedAt,
         };
       }),
       page,
