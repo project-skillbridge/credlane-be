@@ -14,6 +14,15 @@ import {
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { EmployerRoleVisibility } from '../entities/employer-role.entity';
+import {
+  TALENT_ROLE_TRACKS,
+  TALENT_EDUCATION_LEVELS,
+} from '../../talent/talent.constants';
+import type {
+  TalentRoleTrack,
+  TalentEducationLevel,
+} from '../../talent/talent.constants';
+import { VerifiedLevel } from '../../assessments/entities/assessment-question.entity';
 
 export class CreateRoleDto {
   @ApiProperty({ example: 'Senior Backend Engineer' })
@@ -56,11 +65,23 @@ export class CreateRoleDto {
   @IsIn(['Remote', 'Hybrid', 'On-site'])
   workArrangement?: string;
 
-  @ApiPropertyOptional({ example: 'Bachelor' })
+  @ApiPropertyOptional({
+    example: 'bachelor',
+    enum: TALENT_EDUCATION_LEVELS,
+    description: 'Minimum education level required',
+  })
   @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  education?: string;
+  @IsIn([...TALENT_EDUCATION_LEVELS])
+  education?: TalentEducationLevel;
+
+  @ApiPropertyOptional({
+    example: 'mid',
+    enum: VerifiedLevel,
+    description: 'Target experience level for this role',
+  })
+  @IsOptional()
+  @IsEnum(VerifiedLevel)
+  level?: VerifiedLevel;
 
   @ApiPropertyOptional({ type: [String], example: ['NestJS', 'PostgreSQL'] })
   @IsOptional()
@@ -124,6 +145,14 @@ export class CreateRoleDto {
   @IsOptional()
   @IsEnum(EmployerRoleVisibility)
   visibility?: EmployerRoleVisibility;
+
+  @ApiProperty({
+    example: 'backend_developer',
+    enum: TALENT_ROLE_TRACKS,
+    description: 'Canonical talent track slug this role maps to',
+  })
+  @IsIn([...TALENT_ROLE_TRACKS])
+  track: TalentRoleTrack;
 
   @ApiPropertyOptional({
     example: 100,

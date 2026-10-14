@@ -57,7 +57,7 @@ export class OffersController {
     @Body() dto: CreateOfferDto,
   ) {
     const result = await this.offersService.sendOffers(employerUserId, dto);
-    return { message: 'Interview invite sent', data: result };
+    return { message: 'Offer invite sent', data: result };
   }
 
   @Get('employer/offers')
@@ -329,7 +329,11 @@ export class OffersController {
     @CurrentUser('sub') candidateUserId: string,
     @Param('offerId', ParseUUIDPipe) offerId: string,
   ) {
-    return this.offersService.respondToOffer(candidateUserId, offerId, 'accept');
+    return this.offersService.respondToOffer(
+      candidateUserId,
+      offerId,
+      'accept',
+    );
   }
 
   @Patch('talent/offers/:offerId/decline')

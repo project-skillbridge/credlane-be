@@ -4,7 +4,7 @@ Thanks for contributing to **nestjs-starter**! This guide covers setup, branchin
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24+
 - pnpm 9+ (preferred). If you use npm/yarn, translate commands accordingly.
 - PostgreSQL 14+ for local development
 

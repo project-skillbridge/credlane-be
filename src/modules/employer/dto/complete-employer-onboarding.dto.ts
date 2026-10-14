@@ -6,7 +6,6 @@ import {
   IsOptional,
   IsString,
   IsUrl,
-  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -16,8 +15,6 @@ import {
   EMPLOYER_HIRING_RANGES,
   EMPLOYER_JOINING_AS,
   EMPLOYER_PREFERRED_EXPERIENCE_LEVELS,
-  LINKEDIN_COMPANY_PAGE_ERROR,
-  LINKEDIN_COMPANY_URL_REGEX,
 } from '../employer.constants';
 
 export class CompleteEmployerOnboardingDto {
@@ -116,9 +113,6 @@ export class CompleteEmployerOnboardingDto {
     description: 'LinkedIn company page URL',
   })
   @IsOptional()
-  @Matches(LINKEDIN_COMPANY_URL_REGEX, {
-    message: LINKEDIN_COMPANY_PAGE_ERROR,
-  })
   @MaxLength(500)
   linkedinCompanyPageUrl?: string;
 }

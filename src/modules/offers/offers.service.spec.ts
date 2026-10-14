@@ -108,6 +108,7 @@ describe('OffersService', () => {
       candidateUserId: 'candidate-1',
       roleId: 'role-1',
       roleTitle: 'Frontend Developer',
+      roleTrack: 'frontend_developer',
       roleDescription: 'We would like to offer you a position',
       compensation: '$80k - $100k',
       employmentType: 'Full-time',
@@ -188,6 +189,20 @@ describe('OffersService', () => {
 
       await expect(service.createOffer('employer-1', dto)).rejects.toThrow(
         'Offers can only be sent to Job Ready candidates',
+      );
+    });
+
+    it('should throw ForbiddenError if candidate role track does not match', async () => {
+      const pool = {
+        id: 'pool-1',
+        candidate_id: 'candidate-1',
+        tier: 'job_ready',
+        track: 'backend_developer',
+      };
+      mockPoolProfileRepo.findOne.mockResolvedValue(pool);
+
+      await expect(service.createOffer('employer-1', dto)).rejects.toThrow(
+        'Offers can only be sent to candidates that match this role.',
       );
     });
 

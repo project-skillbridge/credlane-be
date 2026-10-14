@@ -4,4 +4,8 @@ allowBuilds:
   argon2: true
   bcrypt: true
   msgpackr-extract: true
+  node: false
   protobufjs: true
+permissions:
+  dotenv:
+    skills: false

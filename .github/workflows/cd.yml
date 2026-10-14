@@ -79,7 +79,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -107,8 +107,6 @@ jobs:
           ssh "$REMOTE" "mkdir -p ${DEST}/src"
           # compiled app
           rsync -az --delete dist/ "${REMOTE}:${DEST}/dist/"
-          # migration source files (typeorm-ts-node-commonjs needs src/database/)
-          rsync -az --delete src/database/ "${REMOTE}:${DEST}/src/database/"
           # package manifest and PM2 config
           rsync -az package.json pnpm-lock.yaml ecosystem.config.cjs "${REMOTE}:${DEST}/"
 
@@ -156,7 +154,7 @@ jobs:
               PGPASSWORD="$DATABASE_PASSWORD" createdb -h "$DATABASE_HOST" -p "${DATABASE_PORT:-5432}" -U "$DATABASE_USER" "$DATABASE_NAME"
             fi
 
-            pnpm migration:run
+            pnpm migration:run:prod
 
             export PM2_APP_NAME="$APP_NAME"
             if pm2 describe "$APP_NAME" > /dev/null 2>&1; then

@@ -23,6 +23,7 @@ import {
   EmployerAssessmentQuestionSource,
   EmployerAssessmentType,
 } from '../entities/employer-assessment.entity';
+import type { TalentRoleTrack } from '../../talent/talent.constants';
 import { EmployerQuestionType } from '../entities/employer-assessment-question.entity';
 
 export class EmployerAssessmentQuestionInputDto {
@@ -66,7 +67,7 @@ export class CreateEmployerAssessmentDto {
   @IsNotEmpty()
   @IsString()
   @MaxLength(100)
-  roleTrack: string;
+  roleTrack: TalentRoleTrack;
 
   @ApiProperty({ enum: EmployerAssessmentExperienceLevel })
   @IsEnum(EmployerAssessmentExperienceLevel)
@@ -91,7 +92,8 @@ export class CreateEmployerAssessmentDto {
 
   @ApiProperty({
     enum: EmployerAssessmentType,
-    description: 'internal invites use talent IDs; external invites use emails.',
+    description:
+      'internal invites use talent IDs; external invites use emails.',
   })
   @IsEnum(EmployerAssessmentType)
   type: EmployerAssessmentType;
