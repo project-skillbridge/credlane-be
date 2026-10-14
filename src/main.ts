@@ -1,3 +1,4 @@
+import dns from 'node:dns';
 import { NestFactory, Reflector } from '@nestjs/core';
 import './tracing';
 import { Logger } from 'nestjs-pino';
@@ -9,6 +10,8 @@ import { Request, Response } from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { env } from './config/env';
+
+dns.setDefaultResultOrder('ipv4first');
 
 const corsOrigins = env.CORS_ORIGIN.split(',')
   .map((origin) => origin.trim())
