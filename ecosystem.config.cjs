@@ -10,7 +10,7 @@ module.exports = {
       instances: 1,
       exec_mode: 'fork',
       env_dev: {
-        NODE_ENV: 'production',
+        NODE_ENV: 'development',
       },
     },
     {
@@ -19,7 +19,7 @@ module.exports = {
       instances: 1,
       exec_mode: 'fork',
       env_staging: {
-        NODE_ENV: 'production',
+        NODE_ENV: 'staging',
       },
     },
     {
@@ -39,10 +39,10 @@ module.exports = {
       autorestart: false,
       max_restarts: 0,
       env_dev: {
-        NODE_ENV: 'production',
+        NODE_ENV: 'development',
       },
       env_staging: {
-        NODE_ENV: 'production',
+        NODE_ENV: 'staging',
       },
       env_production: {
         NODE_ENV: 'production',
