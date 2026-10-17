@@ -105,7 +105,8 @@ export class PracticeAssessmentService {
       throw new NotFoundException(PRACTICE_MESSAGES.QUESTION_NOT_FOUND);
     }
 
-    const explanation = question.metadata?.explanation;
+    const metadata = question.metadata as Record<string, unknown> | null;
+    const explanation = metadata?.explanation;
     return {
       correct: answer.trim() === question.correct_answer.trim(),
       correct_answer: question.correct_answer,

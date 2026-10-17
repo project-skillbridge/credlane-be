@@ -32,6 +32,12 @@ function readCsv(flag: string): string[] | undefined {
     .filter(Boolean);
 }
 
+/** Types the generator supports; practice questions are written by hand. */
+const GENERATABLE_TYPES: readonly string[] = [
+  AssessmentType.SKILL,
+  AssessmentType.ADVANCED,
+];
+
 function readAssessmentTypes():
   | QuestionBankGeneratorAssessmentType[]
   | undefined {
@@ -44,9 +50,8 @@ function readAssessmentTypes():
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean)
-    .filter(
-      (entry): entry is QuestionBankGeneratorAssessmentType =>
-        entry === AssessmentType.SKILL || entry === AssessmentType.ADVANCED,
+    .filter((entry): entry is QuestionBankGeneratorAssessmentType =>
+      GENERATABLE_TYPES.includes(entry),
     );
 
   return types.length > 0 ? types : undefined;
