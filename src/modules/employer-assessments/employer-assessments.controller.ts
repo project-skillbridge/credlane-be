@@ -15,6 +15,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
 import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -31,6 +32,7 @@ import {
   ApiGetPublicAssessment,
   ApiImportAssessmentQuestions,
   ApiListCredlaneCatalogue,
+  ApiDraftAssessmentQuestions,
   ApiGetEmployerAssessmentResultDetail,
   ApiListEmployerAssessmentResults,
   ApiListEmployerAssessments,
@@ -48,6 +50,8 @@ import { ListEmployerAssessmentResultsQueryDto } from './dto/list-employer-asses
 import { SearchAssessmentCandidatesQueryDto } from './dto/search-assessment-candidates-query.dto';
 import { SubmitEmployerAssessmentDto } from './dto/submit-employer-assessment.dto';
 import { EMPLOYER_ASSESSMENT_IMPORT_MAX_FILE_BYTES } from './employer-assessments.constants';
+import { DraftAssessmentQuestionsDto } from './dto/draft-assessment-questions.dto';
+import { EmployerAssessmentDraftService } from './employer-assessment-draft.service';
 import { EmployerAssessmentsService } from './employer-assessments.service';
 
 @ApiEmployerAssessmentsTags()
@@ -55,7 +59,21 @@ import { EmployerAssessmentsService } from './employer-assessments.service';
 export class EmployerAssessmentsController {
   constructor(
     private readonly employerAssessmentsService: EmployerAssessmentsService,
+    private readonly draftService: EmployerAssessmentDraftService,
   ) {}
+
+  /** AI-drafted starting point only; the employer reviews before saving. */
+  @Post('employer/assessments/draft-questions')
+  @Roles(UserRole.EMPLOYER)
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 3_600_000 } })
+  @ApiDraftAssessmentQuestions()
+  draftQuestions(
+    @CurrentUser('sub') employerUserId: string,
+    @Body() dto: DraftAssessmentQuestionsDto,
+  ) {
+    return this.draftService.draftQuestions(employerUserId, dto);
+  }
 
   @Post('employer/assessments')
   @Roles(UserRole.EMPLOYER)

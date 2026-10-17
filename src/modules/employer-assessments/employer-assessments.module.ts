@@ -20,6 +20,7 @@ import {
   EmployerAssessmentExternalSubmission,
 } from './entities';
 import { EmployerBillingModule } from '../employer-billing/employer-billing.module';
+import { EmployerAssessmentDraftService } from './employer-assessment-draft.service';
 import { EmployerAssessmentsController } from './employer-assessments.controller';
 import { EmployerAssessmentsService } from './employer-assessments.service';
 
@@ -47,7 +48,7 @@ import { EmployerAssessmentsService } from './employer-assessments.service';
     MailModule,
   ],
   controllers: [EmployerAssessmentsController],
-  providers: [EmployerAssessmentsService],
+  providers: [EmployerAssessmentsService, EmployerAssessmentDraftService],
   exports: [EmployerAssessmentsService],
 })
 export class EmployerAssessmentsModule {}

@@ -187,6 +187,21 @@ export const ApiListEmployerAssessmentResults = () =>
     ApiResponse({ status: 500, description: 'Internal server error' }),
   );
 
+export const ApiDraftAssessmentQuestions = () =>
+  applyDecorators(
+    ApiBearerAuth(),
+    ApiOperation({
+      summary: 'AI-draft screening questions from a job description',
+      description:
+        'Returns a draft the employer must review and edit. Limited to 10 per hour.',
+    }),
+    ApiResponse({ status: 200, description: 'Drafted questions returned' }),
+    ApiResponse({ status: 400, description: 'Not enough usable questions' }),
+    ApiResponse({ status: 403, description: 'Verified employer required' }),
+    ApiResponse({ status: 429, description: 'Too many drafts requested' }),
+    ApiResponse({ status: 503, description: 'AI service unavailable' }),
+  );
+
 export const ApiGetEmployerAssessmentResultDetail = () =>
   applyDecorators(
     ApiBearerAuth(),
