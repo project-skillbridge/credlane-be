@@ -1,0 +1,103 @@
+{
+  "title": "Frontend Developer: Mid-level screening (SAMPLE, dev only)",
+  "description": "Sample content for testing the library picker. Replace with reviewed content before launch.",
+  "estimatedCompletionTime": "15 minutes",
+  "roleTrack": "frontend_developer",
+  "experienceLevel": "mid",
+  "questions": [
+    {
+      "questionText": "A page renders a list of 5,000 rows and scrolling is janky. Which change most directly reduces the work the browser does while the user scrolls?",
+      "questionType": "multiple_choice",
+      "options": [
+        "Wrap every row component in React.memo to skip re-renders",
+        "Inline the row styles to avoid stylesheet lookups",
+        "Virtualize the list so only visible rows are in the DOM",
+        "Use array indexes as keys so React reuses DOM nodes"
+      ],
+      "correctAnswer": "Virtualize the list so only visible rows are in the DOM"
+    },
+    {
+      "questionText": "A component starts a setInterval inside a useEffect with an empty dependency array and logs count every second. The logged value never changes even though the UI updates. What is the cause?",
+      "questionType": "multiple_choice",
+      "options": [
+        "The interval callback captured the first render's count",
+        "setInterval callbacks run before React commits state",
+        "Empty dependency arrays make state updates asynchronous",
+        "React drops state updates that happen inside timers"
+      ],
+      "correctAnswer": "The interval callback captured the first render's count"
+    },
+    {
+      "questionText": "Which element should a control that submits a form be, so keyboard and screen reader users get the right behaviour without extra ARIA?",
+      "questionType": "multiple_choice",
+      "options": [
+        "A div with role=\"button\" and an onClick handler",
+        "An anchor with href=\"#\" and an onClick handler",
+        "A span with tabindex=\"0\" and an onClick handler",
+        "A button element with type=\"submit\""
+      ],
+      "correctAnswer": "A button element with type=\"submit\""
+    },
+    {
+      "questionText": "A signed-in user requests an API route that only admins may use. Which HTTP status is the most accurate response?",
+      "questionType": "multiple_choice",
+      "options": [
+        "401 Unauthorized",
+        "403 Forbidden",
+        "404 Not Found",
+        "409 Conflict"
+      ],
+      "correctAnswer": "403 Forbidden"
+    },
+    {
+      "questionText": "A comment field is rendered with dangerouslySetInnerHTML and the comment text comes straight from other users. What is the main risk?",
+      "questionType": "multiple_choice",
+      "options": [
+        "Stored cross-site scripting if the HTML is not sanitized",
+        "SQL injection against the comments table",
+        "Cross-site request forgery on the comment form",
+        "Exposing the API key in the page source"
+      ],
+      "correctAnswer": "Stored cross-site scripting if the HTML is not sanitized"
+    },
+    {
+      "questionText": "The rules \".card p { color: blue }\" and \"p.note { color: red }\" both match <p class=\"note\"> inside .card, with equal specificity. Which colour does the paragraph get?",
+      "questionType": "multiple_choice",
+      "options": [
+        "Blue, because the first rule is more specific",
+        "Red, because it names the element and its class directly",
+        "Whichever rule appears later in the stylesheet",
+        "Neither, the browser inherits the parent colour"
+      ],
+      "correctAnswer": "Whichever rule appears later in the stylesheet"
+    },
+    {
+      "questionText": "Using await inside the callback passed to Array.prototype.forEach makes the loop wait, so each iteration finishes before the next starts.",
+      "questionType": "true_false",
+      "options": ["True", "False"],
+      "correctAnswer": "False"
+    },
+    {
+      "questionText": "In a component test, a button appears only after data loads from an API. Which approach is the most reliable way to assert it appears?",
+      "questionType": "multiple_choice",
+      "options": [
+        "Wait one second with setTimeout, then call getByRole",
+        "Read the component's state through its instance",
+        "Await findByRole, which retries until it appears or times out",
+        "Snapshot the first render and compare it later"
+      ],
+      "correctAnswer": "Await findByRole, which retries until it appears or times out"
+    },
+    {
+      "questionText": "Items in a list can be reordered and deleted by the user. Which value is the best React key for each item?",
+      "questionType": "multiple_choice",
+      "options": [
+        "The item's index in the array",
+        "A random number generated on every render",
+        "The item's visible text",
+        "A stable id that comes with the item's data"
+      ],
+      "correctAnswer": "A stable id that comes with the item's data"
+    }
+  ]
+}

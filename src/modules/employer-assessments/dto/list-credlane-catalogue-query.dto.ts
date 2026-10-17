@@ -1,8 +1,30 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
+import { EmployerAssessmentExperienceLevel } from '../entities/employer-assessment.entity';
 
 export class ListCredlaneCatalogueQueryDto {
+  @ApiPropertyOptional({
+    description: 'Only library assessments for this role track',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  roleTrack?: string;
+
+  @ApiPropertyOptional({ enum: EmployerAssessmentExperienceLevel })
+  @IsOptional()
+  @IsEnum(EmployerAssessmentExperienceLevel)
+  experienceLevel?: EmployerAssessmentExperienceLevel;
+
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
   @Type(() => Number)

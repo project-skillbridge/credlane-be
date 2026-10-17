@@ -33,6 +33,7 @@ import {
   ApiImportAssessmentQuestions,
   ApiListCredlaneCatalogue,
   ApiDraftAssessmentQuestions,
+  ApiGetCredlaneCatalogueEntry,
   ApiGetEmployerAssessmentResultDetail,
   ApiListEmployerAssessmentResults,
   ApiListEmployerAssessments,
@@ -176,6 +177,20 @@ export class EmployerAssessmentsController {
       employerUserId,
       query.page,
       query.limit,
+      { roleTrack: query.roleTrack, experienceLevel: query.experienceLevel },
+    );
+  }
+
+  @Get('employer/assessments/credlane-catalogue/:catalogueId')
+  @Roles(UserRole.EMPLOYER)
+  @ApiGetCredlaneCatalogueEntry()
+  getCredlaneCatalogueEntry(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('catalogueId', ParseUUIDPipe) catalogueId: string,
+  ) {
+    return this.employerAssessmentsService.getCredlaneCatalogueEntry(
+      employerUserId,
+      catalogueId,
     );
   }
 

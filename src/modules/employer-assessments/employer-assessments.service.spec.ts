@@ -19,7 +19,7 @@ import {
 import type { TalentRoleTrack } from '@modules/talent/talent.constants';
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
-import { AssessmentQuestion } from '../assessments/entities/assessment-question.entity';
+import { CredlaneCatalogueQuestion } from './entities/credlane-catalogue-question.entity';
 import { EmployerSavedCandidate } from '../employer-discovery/entities/employer-saved-candidate.entity';
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
 import { EmployerPoolProfile } from '../talent/entities/employer-pool-profile.entity';
@@ -61,7 +61,17 @@ describe('EmployerAssessmentsService', () => {
     }),
   };
 
-  const mockBankQuestionRepo = { find: jest.fn() };
+  const mockCatalogueQuestionQb = {
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    getRawMany: jest.fn().mockResolvedValue([]),
+  };
+  const mockCatalogueQuestionRepo = {
+    find: jest.fn(),
+    createQueryBuilder: jest.fn().mockReturnValue(mockCatalogueQuestionQb),
+  };
   const mockSavedCandidateRepo = {
     createQueryBuilder: jest.fn(),
   };
@@ -139,7 +149,7 @@ describe('EmployerAssessmentsService', () => {
 
   const mockCatalogueRepo = {
     findOne: jest.fn(),
-    findAndCount: jest.fn(),
+    find: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -163,8 +173,8 @@ describe('EmployerAssessmentsService', () => {
           useValue: mockSubmissionRepo,
         },
         {
-          provide: getRepositoryToken(AssessmentQuestion),
-          useValue: mockBankQuestionRepo,
+          provide: getRepositoryToken(CredlaneCatalogueQuestion),
+          useValue: mockCatalogueQuestionRepo,
         },
         {
           provide: getRepositoryToken(EmployerSavedCandidate),
@@ -1098,6 +1108,44 @@ describe('EmployerAssessmentsService', () => {
       expect(result.questionCount).toBe(2);
     });
 
+    it('hides the correct answer for library assessments but still marks right and wrong', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockAssessmentRepo.findOne.mockResolvedValue({
+        id: 'ass-1',
+        employer_user_id: 'emp-1',
+        question_source: EmployerAssessmentQuestionSource.CREDLANE_BANK,
+        questions: [
+          {
+            id: 'q1',
+            position: 1,
+            question_text: 'First',
+            question_type: 'multiple_choice',
+            options: ['a', 'b'],
+            correct_answer: 'a',
+          },
+        ],
+      });
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      const external = {
+        id: 'e1',
+        score: 0,
+        passed: false,
+        external_applicant: { email: 'x@mail.com' },
+        submitted_at: new Date(),
+        responses: [{ answers: [{ questionId: 'q1', answer: 'b' }] }],
+      };
+      mockExternalSubmissionRepo.find.mockResolvedValue([external]);
+      mockExternalSubmissionRepo.findOne.mockResolvedValue(external);
+
+      const result = await service.getResultDetail('emp-1', 'ass-1', 'e1');
+
+      expect(result.questions[0].isCorrect).toBe(false);
+      expect(result.questions[0].correctAnswer).toBeNull();
+    });
+
     it('should 404 when the submission is not on this assessment', async () => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
@@ -1364,44 +1412,82 @@ describe('EmployerAssessmentsService', () => {
   // ─── listCredlaneCatalogue ──────────────────────────────────────────────────
 
   describe('listCredlaneCatalogue', () => {
-    it('should return paginated catalogue entries mapped to DTO shape', async () => {
+    const entry = (
+      id: string,
+      level = EmployerAssessmentExperienceLevel.JUNIOR,
+    ) => ({
+      id,
+      title: 'Frontend – Mid',
+      description: 'Basics',
+      estimated_completion_time: '20 minutes',
+      role_track: 'frontend_developer',
+      experience_level: level,
+      is_active: true,
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    beforeEach(() => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
         is_verified: true,
       });
-      const entries = [
-        {
-          id: 'cat-1',
-          title: 'Backend – Junior',
-          description: 'Basics',
-          estimated_completion_time: '20 minutes',
-          role_track: 'backend_developer',
-          experience_level: EmployerAssessmentExperienceLevel.JUNIOR,
-          is_active: true,
-          created_at: new Date(),
-          updated_at: new Date(),
-        },
-      ];
-      mockCatalogueRepo.findAndCount.mockResolvedValue([entries, 1]);
+    });
+
+    it('lists usable entries with a question count and no internal fields', async () => {
+      mockCatalogueRepo.find.mockResolvedValue([entry('cat-1')]);
+      mockCatalogueQuestionQb.getRawMany.mockResolvedValue([
+        { id: 'cat-1', count: '8' },
+      ]);
 
       const result = await service.listCredlaneCatalogue('emp-1', 1, 20);
 
-      expect(result.catalogue).toHaveLength(1);
-      expect(result.catalogue[0]).toEqual({
-        id: 'cat-1',
-        title: 'Backend – Junior',
-        description: 'Basics',
-        estimated_completion_time: '20 minutes',
-        role_track: 'backend_developer',
-        experience_level: EmployerAssessmentExperienceLevel.JUNIOR,
-      });
-      // Should not expose internal fields
-      expect(result.catalogue[0]).not.toHaveProperty('is_active');
-      expect(result.catalogue[0]).not.toHaveProperty('created_at');
+      expect(result.catalogue).toEqual([
+        {
+          id: 'cat-1',
+          title: 'Frontend – Mid',
+          description: 'Basics',
+          estimated_completion_time: '20 minutes',
+          role_track: 'frontend_developer',
+          experience_level: EmployerAssessmentExperienceLevel.JUNIOR,
+          question_count: 8,
+        },
+      ]);
       expect(result.total).toBe(1);
-      expect(result.page).toBe(1);
-      expect(result.limit).toBe(20);
-      expect(result.totalPages).toBe(1);
+    });
+
+    it('hides entries that do not have enough questions yet', async () => {
+      mockCatalogueRepo.find.mockResolvedValue([
+        entry('cat-1'),
+        entry('cat-2'),
+      ]);
+      mockCatalogueQuestionQb.getRawMany.mockResolvedValue([
+        { id: 'cat-1', count: '4' },
+      ]);
+
+      const result = await service.listCredlaneCatalogue('emp-1', 1, 20);
+
+      expect(result.catalogue).toHaveLength(0);
+      expect(result.total).toBe(0);
+    });
+
+    it('filters by track and level', async () => {
+      mockCatalogueRepo.find.mockResolvedValue([]);
+
+      await service.listCredlaneCatalogue('emp-1', 1, 20, {
+        roleTrack: 'frontend_developer',
+        experienceLevel: EmployerAssessmentExperienceLevel.MID,
+      });
+
+      expect(mockCatalogueRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            is_active: true,
+            role_track: 'frontend_developer',
+            experience_level: EmployerAssessmentExperienceLevel.MID,
+          },
+        }),
+      );
     });
 
     it('should reject unverified employers', async () => {
@@ -1413,6 +1499,55 @@ describe('EmployerAssessmentsService', () => {
       await expect(
         service.listCredlaneCatalogue('emp-1', 1, 20),
       ).rejects.toThrow('Only verified employers');
+    });
+  });
+
+  describe('getCredlaneCatalogueEntry', () => {
+    const questions = Array.from({ length: 5 }, (_, i) => ({
+      position: i + 1,
+      question_text: `Q${i + 1}`,
+      question_type: 'multiple_choice',
+      options: ['a', 'b', 'c', 'd'],
+      correct_answer: 'a',
+    }));
+
+    beforeEach(() => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+    });
+
+    it('returns the questions without any answer key', async () => {
+      mockCatalogueRepo.findOne.mockResolvedValue({
+        id: 'cat-1',
+        title: 'T',
+        description: null,
+        estimated_completion_time: '20 minutes',
+        role_track: 'frontend_developer',
+        experience_level: EmployerAssessmentExperienceLevel.MID,
+      });
+      mockCatalogueQuestionRepo.find.mockResolvedValue(questions);
+
+      const result = await service.getCredlaneCatalogueEntry('emp-1', 'cat-1');
+
+      expect(result.question_count).toBe(5);
+      expect(result.questions[0]).toEqual({
+        position: 1,
+        questionText: 'Q1',
+        questionType: 'multiple_choice',
+        options: ['a', 'b', 'c', 'd'],
+      });
+      expect(JSON.stringify(result)).not.toContain('correct');
+    });
+
+    it('404s for a missing or too-small entry', async () => {
+      mockCatalogueRepo.findOne.mockResolvedValue({ id: 'cat-1' });
+      mockCatalogueQuestionRepo.find.mockResolvedValue(questions.slice(0, 3));
+
+      await expect(
+        service.getCredlaneCatalogueEntry('emp-1', 'cat-1'),
+      ).rejects.toThrow('Library assessment not found');
     });
   });
 
@@ -1498,6 +1633,35 @@ describe('EmployerAssessmentsService', () => {
       ).rejects.toThrow('does not match the specified role track');
     });
 
+    it('should reject a library assessment with too few questions', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockCatalogueRepo.findOne.mockResolvedValue({
+        id: '00000000-0000-0000-0000-000000000001',
+        role_track: 'backend_developer',
+        experience_level: EmployerAssessmentExperienceLevel.MID,
+        is_active: true,
+      });
+      mockCatalogueQuestionRepo.find.mockResolvedValue([
+        {
+          question_text: 'Only one',
+          question_type: 'multiple_choice',
+          options: ['A', 'B'],
+          correct_answer: 'A',
+          position: 1,
+        },
+      ]);
+
+      await expect(
+        service.createAssessment('emp-1', {
+          ...credlaneBankDto,
+          credlaneAssessmentId: '00000000-0000-0000-0000-000000000001',
+        }),
+      ).rejects.toThrow('does not have enough questions');
+    });
+
     it('should create an assessment from credlane_bank with valid catalogue item', async () => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
@@ -1509,13 +1673,13 @@ describe('EmployerAssessmentsService', () => {
         experience_level: EmployerAssessmentExperienceLevel.MID,
         is_active: true,
       });
-      mockBankQuestionRepo.find.mockResolvedValue(
-        Array.from({ length: 10 }, (_, i) => ({
-          question_text: `Bank Q${i + 1}`,
+      mockCatalogueQuestionRepo.find.mockResolvedValue(
+        Array.from({ length: 8 }, (_, i) => ({
+          question_text: `Library Q${i + 1}`,
           question_type: 'multiple_choice',
           options: ['A', 'B', 'C', 'D'],
           correct_answer: 'A',
-          question_number: i + 1,
+          position: i + 1,
         })),
       );
       const lockQueryBuilder = {
@@ -1561,7 +1725,12 @@ describe('EmployerAssessmentsService', () => {
           is_active: true,
         },
       });
-      expect(mockBankQuestionRepo.find).toHaveBeenCalled();
+      expect(mockCatalogueQuestionRepo.find).toHaveBeenCalledWith({
+        where: {
+          catalogue_assessment_id: '00000000-0000-0000-0000-000000000001',
+        },
+        order: { position: 'ASC' },
+      });
     });
   });
 });

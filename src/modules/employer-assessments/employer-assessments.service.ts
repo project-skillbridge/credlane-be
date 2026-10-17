@@ -18,12 +18,6 @@ import {
   TooManyRequestsError,
 } from '../../shared';
 import { EMPLOYER_ASSESSMENT_IMPORT_MAX_FILE_BYTES } from './employer-assessments.constants';
-import {
-  AssessmentQuestion,
-  AssessmentType,
-  QuestionType,
-  VerifiedLevel,
-} from '../assessments/entities/assessment-question.entity';
 import { EmployerSavedCandidate } from '../employer-discovery/entities/employer-saved-candidate.entity';
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
 import { EmployerRole } from '../employer-roles/entities/employer-role.entity';
@@ -66,6 +60,7 @@ import {
 } from './entities/employer-assessment-question.entity';
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
+import { CredlaneCatalogueQuestion } from './entities/credlane-catalogue-question.entity';
 
 export type AssessmentResultRow = {
   id: string;
@@ -109,7 +104,8 @@ export type AssessmentResultDetail = AssessmentResultRow & {
     questionText: string;
     questionType: string;
     options: string[] | null;
-    correctAnswer: string;
+    /** Null for library assessments: SkillSift keeps that answer key private. */
+    correctAnswer: string | null;
     givenAnswer: string | null;
     isCorrect: boolean;
   }>;
@@ -167,8 +163,8 @@ export class EmployerAssessmentsService {
     private readonly inviteRepo: Repository<EmployerAssessmentInvite>,
     @InjectRepository(EmployerAssessmentSubmission)
     private readonly submissionRepo: Repository<EmployerAssessmentSubmission>,
-    @InjectRepository(AssessmentQuestion)
-    private readonly bankQuestionRepo: Repository<AssessmentQuestion>,
+    @InjectRepository(CredlaneCatalogueQuestion)
+    private readonly catalogueQuestionRepo: Repository<CredlaneCatalogueQuestion>,
     @InjectRepository(EmployerSavedCandidate)
     private readonly savedCandidateRepo: Repository<EmployerSavedCandidate>,
     @InjectRepository(EmployerPoolProfile)
@@ -468,10 +464,45 @@ export class EmployerAssessmentsService {
     };
   }
 
+  /** Library assessments with enough questions to be used, optionally filtered. */
+  private async loadUsableCatalogue(filters: {
+    roleTrack?: string;
+    experienceLevel?: EmployerAssessmentExperienceLevel;
+  }): Promise<Array<{ entry: CredlaneCatalogueAssessment; count: number }>> {
+    const where: Record<string, unknown> = { is_active: true };
+    if (filters.roleTrack) where.role_track = filters.roleTrack;
+    if (filters.experienceLevel)
+      where.experience_level = filters.experienceLevel;
+    const entries = await this.catalogueRepo.find({
+      where,
+      order: { role_track: 'ASC', experience_level: 'ASC', title: 'ASC' },
+    });
+    if (entries.length === 0) return [];
+
+    const counts = await this.catalogueQuestionRepo
+      .createQueryBuilder('q')
+      .select('q.catalogue_assessment_id', 'id')
+      .addSelect('COUNT(*)', 'count')
+      .where('q.catalogue_assessment_id IN (:...ids)', {
+        ids: entries.map((entry) => entry.id),
+      })
+      .groupBy('q.catalogue_assessment_id')
+      .getRawMany<{ id: string; count: string }>();
+    const countById = new Map(counts.map((row) => [row.id, Number(row.count)]));
+
+    return entries
+      .map((entry) => ({ entry, count: countById.get(entry.id) ?? 0 }))
+      .filter(({ count }) => count >= MIN_COMPANY_QUESTIONS);
+  }
+
   async listCredlaneCatalogue(
     employerUserId: string,
     page = 1,
     limit = 20,
+    filters: {
+      roleTrack?: string;
+      experienceLevel?: EmployerAssessmentExperienceLevel;
+    } = {},
   ): Promise<{
     catalogue: {
       id: string;
@@ -480,6 +511,7 @@ export class EmployerAssessmentsService {
       estimated_completion_time: string;
       role_track: string;
       experience_level: EmployerAssessmentExperienceLevel;
+      question_count: number;
     }[];
     total: number;
     page: number;
@@ -487,25 +519,54 @@ export class EmployerAssessmentsService {
     totalPages: number;
   }> {
     await this.ensureVerifiedEmployer(employerUserId);
-    const [entries, total] = await this.catalogueRepo.findAndCount({
-      where: { is_active: true },
-      order: { role_track: 'ASC', experience_level: 'ASC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const usable = await this.loadUsableCatalogue(filters);
+    const pageRows = usable.slice((page - 1) * limit, page * limit);
     return {
-      catalogue: entries.map((entry) => ({
+      catalogue: pageRows.map(({ entry, count }) => ({
         id: entry.id,
         title: entry.title,
         description: entry.description,
         estimated_completion_time: entry.estimated_completion_time,
         role_track: entry.role_track,
         experience_level: entry.experience_level,
+        question_count: count,
       })),
-      total,
+      total: usable.length,
       page,
       limit,
-      totalPages: Math.ceil(total / limit),
+      totalPages: Math.ceil(usable.length / limit),
+    };
+  }
+
+  /** Preview of a library assessment. Never includes the answer key. */
+  async getCredlaneCatalogueEntry(employerUserId: string, id: string) {
+    await this.ensureVerifiedEmployer(employerUserId);
+    const entry = await this.catalogueRepo.findOne({
+      where: { id, is_active: true },
+    });
+    const questions = entry
+      ? await this.catalogueQuestionRepo.find({
+          where: { catalogue_assessment_id: entry.id },
+          order: { position: 'ASC' },
+        })
+      : [];
+    if (!entry || questions.length < MIN_COMPANY_QUESTIONS) {
+      throw new NotFoundError('Library assessment not found');
+    }
+    return {
+      id: entry.id,
+      title: entry.title,
+      description: entry.description,
+      estimated_completion_time: entry.estimated_completion_time,
+      role_track: entry.role_track,
+      experience_level: entry.experience_level,
+      question_count: questions.length,
+      questions: questions.map((question) => ({
+        position: question.position,
+        questionText: question.question_text,
+        questionType: question.question_type,
+        options: question.options,
+      })),
     };
   }
 
@@ -539,6 +600,17 @@ export class EmployerAssessmentsService {
     const stats = (await this.loadAssessmentStats([assessment.id])).get(
       assessment.id,
     );
+
+    // Library questions belong to SkillSift: employers never get the key.
+    if (
+      assessment.question_source ===
+      EmployerAssessmentQuestionSource.CREDLANE_BANK
+    ) {
+      assessment.questions = (assessment.questions ?? []).map((question) => ({
+        ...question,
+        correct_answer: '',
+      }));
+    }
 
     return Object.assign(assessment, {
       talents_count: stats?.talents ?? 0,
@@ -1385,6 +1457,9 @@ export class EmployerAssessmentsService {
       );
     }
 
+    const isLibrary =
+      assessment.question_source ===
+      EmployerAssessmentQuestionSource.CREDLANE_BANK;
     const questions = [...(assessment.questions ?? [])]
       .sort((a, b) => a.position - b.position)
       .map((question) => {
@@ -1396,7 +1471,7 @@ export class EmployerAssessmentsService {
           questionText: question.question_text,
           questionType: question.question_type,
           options: question.options,
-          correctAnswer: question.correct_answer,
+          correctAnswer: isLibrary ? null : question.correct_answer,
           givenAnswer: given === '' ? null : String(answers[question.id]),
           isCorrect: given === expected,
         };
@@ -1586,41 +1661,23 @@ export class EmployerAssessmentsService {
   private async buildQuestionsFromCredLaneBank(
     dto: CreateEmployerAssessmentDto,
   ): Promise<EmployerAssessmentQuestionInputDto[]> {
-    const level = this.mapExperienceLevelToVerifiedLevel(dto.experienceLevel);
-    const bankQuestions = await this.bankQuestionRepo.find({
-      where: {
-        assessment_type: AssessmentType.SKILL,
-        track: dto.roleTrack,
-        verified_level: level,
-        is_live: true,
-      },
-      order: { question_number: 'ASC' },
-      take: 10,
+    const libraryQuestions = await this.catalogueQuestionRepo.find({
+      where: { catalogue_assessment_id: dto.credlaneAssessmentId },
+      order: { position: 'ASC' },
     });
 
-    if (bankQuestions.length < MIN_COMPANY_QUESTIONS) {
+    if (libraryQuestions.length < MIN_COMPANY_QUESTIONS) {
       throw new BadRequestError(
-        'Not enough CredLane question bank questions for the selected role track and experience level',
+        'This library assessment does not have enough questions yet',
       );
     }
 
-    return bankQuestions.map((question) => ({
+    return libraryQuestions.map((question) => ({
       questionText: question.question_text,
-      questionType: this.mapBankQuestionType(question.question_type),
+      questionType: question.question_type,
       options: question.options ?? undefined,
-      correctAnswer: question.correct_answer ?? '',
+      correctAnswer: question.correct_answer,
     }));
-  }
-
-  private mapExperienceLevelToVerifiedLevel(
-    level: EmployerAssessmentExperienceLevel,
-  ): VerifiedLevel {
-    const mapping: Record<EmployerAssessmentExperienceLevel, VerifiedLevel> = {
-      [EmployerAssessmentExperienceLevel.JUNIOR]: VerifiedLevel.JUNIOR,
-      [EmployerAssessmentExperienceLevel.MID]: VerifiedLevel.MID,
-      [EmployerAssessmentExperienceLevel.SENIOR]: VerifiedLevel.SENIOR,
-    };
-    return mapping[level];
   }
 
   private normalizeCompanyQuestions(
@@ -1634,15 +1691,6 @@ export class EmployerAssessmentsService {
         : question.options?.map((option) => option.trim()).filter(Boolean),
       correctAnswer: question.correctAnswer.trim(),
     }));
-  }
-
-  private mapBankQuestionType(
-    questionType: QuestionType,
-  ): EmployerQuestionType {
-    if (questionType === QuestionType.REQUIRED_TEXT) {
-      return EmployerQuestionType.SHORT_ANSWER;
-    }
-    return EmployerQuestionType.MULTIPLE_CHOICE;
   }
 
   private async notifyCandidates(

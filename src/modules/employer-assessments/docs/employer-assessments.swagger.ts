@@ -187,6 +187,17 @@ export const ApiListEmployerAssessmentResults = () =>
     ApiResponse({ status: 500, description: 'Internal server error' }),
   );
 
+export const ApiGetCredlaneCatalogueEntry = () =>
+  applyDecorators(
+    ApiBearerAuth(),
+    ApiOperation({
+      summary: 'Preview a SkillSift library assessment (questions, no answers)',
+    }),
+    ApiResponse({ status: 200, description: 'Library assessment returned' }),
+    ApiResponse({ status: 403, description: 'Verified employer required' }),
+    ApiResponse({ status: 404, description: 'Library assessment not found' }),
+  );
+
 export const ApiDraftAssessmentQuestions = () =>
   applyDecorators(
     ApiBearerAuth(),

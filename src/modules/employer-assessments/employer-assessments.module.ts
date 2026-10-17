@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { AssessmentQuestion } from '../assessments/entities/assessment-question.entity';
 import { EmployerSavedCandidate } from '../employer-discovery/entities/employer-saved-candidate.entity';
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
 import { EmployerRole } from '../employer-roles/entities/employer-role.entity';
@@ -15,6 +14,7 @@ import {
   EmployerAssessmentQuestion,
   EmployerAssessmentSubmission,
   CredlaneCatalogueAssessment,
+  CredlaneCatalogueQuestion,
   EmployerAssessmentExternalApplicant,
   EmployerAssessmentExternalInvite,
   EmployerAssessmentExternalSubmission,
@@ -35,7 +35,6 @@ import { EmployerAssessmentsService } from './employer-assessments.service';
       EmployerAssessmentExternalApplicant,
       EmployerAssessmentExternalInvite,
       EmployerAssessmentExternalSubmission,
-      AssessmentQuestion,
       EmployerSavedCandidate,
       EmployerPoolProfile,
       EmployerProfile,
@@ -43,6 +42,7 @@ import { EmployerAssessmentsService } from './employer-assessments.service';
       EmployerRole,
       Offer,
       CredlaneCatalogueAssessment,
+      CredlaneCatalogueQuestion,
     ]),
     NotificationsModule,
     MailModule,
