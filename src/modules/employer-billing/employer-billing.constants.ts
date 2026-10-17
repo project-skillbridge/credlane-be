@@ -30,7 +30,8 @@ export const WELCOME_UNLOCK_CREDITS = 3;
 export const EMPLOYER_PLANS: readonly EmployerPlan[] = [
   {
     id: 'free',
-    name: 'Free',
+    // Launch-phase offer; it becomes a time-limited trial after launch.
+    name: 'Launch offer',
     monthlyInvites: 10,
     monthlyUnlocks: 0,
     priceUsd: 0,
