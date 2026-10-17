@@ -22,6 +22,7 @@ import {
   ErrorMessages,
   ForbiddenError,
   NotFoundError,
+  PaymentRequiredError,
   TooManyRequestsError,
 } from '../../shared';
 import { EMPLOYER_ASSESSMENT_IMPORT_MAX_FILE_BYTES } from './employer-assessments.constants';
@@ -704,6 +705,11 @@ export class EmployerAssessmentsService {
       );
 
       if (invitableTalentIds.length > 0) {
+        // Charge before sending so an employer out of invites sends nothing.
+        await this.billingService.spendInvites(
+          employerUserId,
+          invitableTalentIds.length,
+        );
         await this.inviteRepo.save(
           invitableTalentIds.map((candidateUserId) => ({
             assessment_id: assessmentId,
@@ -736,6 +742,7 @@ export class EmployerAssessmentsService {
     const nextEmails = emails.filter((email) => !alreadyInvited.has(email));
 
     if (nextEmails.length > 0) {
+      await this.billingService.spendInvites(employerUserId, nextEmails.length);
       await this.externalInviteRepo.save(
         nextEmails.map((email) => ({
           assessment_id: assessmentId,
@@ -769,6 +776,8 @@ export class EmployerAssessmentsService {
         (result): result is { target: string; reason: string } =>
           result !== null,
       );
+    // Nobody was invited by a bounced email, so don't charge for it.
+    await this.billingService.refundInvites(employerUserId, failed.length);
 
     return {
       invited_count: nextEmails.length - failed.length,
@@ -1019,6 +1028,24 @@ export class EmployerAssessmentsService {
         ),
         submitted: done > 0,
       };
+    }
+
+    // People invited by email were charged when invited; walk-ins through the
+    // share link are charged when they start.
+    const wasInvited = await this.externalInviteRepo.findOne({
+      where: { assessment_id: assessment.id, email },
+    });
+    if (!wasInvited) {
+      try {
+        await this.billingService.spendInvites(assessment.employer_user_id, 1);
+      } catch (error: unknown) {
+        if (error instanceof PaymentRequiredError) {
+          throw new ForbiddenError(
+            "This assessment isn't taking new candidates right now. Please contact the employer.",
+          );
+        }
+        throw error;
+      }
     }
 
     const applicant = await this.externalApplicantRepo.save({

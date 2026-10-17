@@ -5,6 +5,7 @@ import { PaymentRequiredError } from '../../shared';
 import {
   EMPLOYER_PLANS,
   type EmployerPlanId,
+  INVITE_PACKS,
   getEmployerPlan,
   WELCOME_UNLOCK_CREDITS,
 } from './employer-billing.constants';
@@ -17,6 +18,12 @@ export type EmployerBillingSummary = {
   monthly_unlocks: number;
   used_this_period: number;
   bonus_credits: number;
+  monthly_invites: number;
+  invites_used_this_period: number;
+  invite_bonus_credits: number;
+  /** Candidates the employer can still invite or admit right now. */
+  invites_remaining: number;
+  invite_packs: typeof INVITE_PACKS;
   /** Unlocks the employer can still spend right now. */
   unlocks_remaining: number;
   period_resets_at: string | null;
@@ -71,6 +78,7 @@ export class EmployerBillingService {
     }
     if (new Date() >= addMonth(wallet.period_start)) {
       wallet.period_used = 0;
+      wallet.invite_period_used = 0;
       wallet.period_start = new Date();
       wallet = await repo.save(wallet);
     }
@@ -90,9 +98,16 @@ export class EmployerBillingService {
       monthly_unlocks: plan.monthlyUnlocks,
       used_this_period: wallet.period_used,
       bonus_credits: wallet.bonus_credits,
+      monthly_invites: plan.monthlyInvites,
+      invites_used_this_period: wallet.invite_period_used,
+      invite_bonus_credits: wallet.invite_bonus_credits,
+      invites_remaining:
+        Math.max(plan.monthlyInvites - wallet.invite_period_used, 0) +
+        wallet.invite_bonus_credits,
+      invite_packs: INVITE_PACKS,
       unlocks_remaining: planLeft + wallet.bonus_credits,
       period_resets_at:
-        plan.monthlyUnlocks > 0
+        plan.monthlyUnlocks > 0 || plan.monthlyInvites > 0
           ? addMonth(wallet.period_start).toISOString()
           : null,
       total_unlocked: totalUnlocked,
@@ -182,6 +197,69 @@ export class EmployerBillingService {
     });
   }
 
+  /**
+   * Spends invites for candidates the employer is assessing. All or nothing:
+   * if the employer can't cover the whole batch, nothing is spent. The monthly
+   * allowance goes first, then purchased packs.
+   */
+  async spendInvites(
+    employerUserId: string,
+    count: number,
+  ): Promise<{ invites_remaining: number }> {
+    if (count <= 0) {
+      return { invites_remaining: await this.invitesRemaining(employerUserId) };
+    }
+    return this.walletRepo.manager.transaction(async (manager) => {
+      const walletRepo = manager.getRepository(EmployerWallet);
+      const wallet = await this.ensureWallet(employerUserId, walletRepo, true);
+      const plan = getEmployerPlan(wallet.plan);
+      const planLeft = Math.max(
+        plan.monthlyInvites - wallet.invite_period_used,
+        0,
+      );
+      const available = planLeft + wallet.invite_bonus_credits;
+      if (available < count) {
+        throw new PaymentRequiredError(
+          `You need ${count} invite${count === 1 ? '' : 's'} but have ${available} left. Upgrade your plan or buy an invite pack to continue.`,
+        );
+      }
+      const fromPlan = Math.min(planLeft, count);
+      wallet.invite_period_used += fromPlan;
+      wallet.invite_bonus_credits -= count - fromPlan;
+      await walletRepo.save(wallet);
+      return { invites_remaining: available - count };
+    });
+  }
+
+  /** Gives back invites that were spent but never delivered (for example a bounced email). */
+  async refundInvites(employerUserId: string, count: number): Promise<void> {
+    if (count <= 0) return;
+    const wallet = await this.ensureWallet(employerUserId);
+    const fromPeriod = Math.min(count, wallet.invite_period_used);
+    wallet.invite_period_used -= fromPeriod;
+    wallet.invite_bonus_credits += count - fromPeriod;
+    await this.walletRepo.save(wallet);
+  }
+
+  async invitesRemaining(employerUserId: string): Promise<number> {
+    const wallet = await this.ensureWallet(employerUserId);
+    const plan = getEmployerPlan(wallet.plan);
+    return (
+      Math.max(plan.monthlyInvites - wallet.invite_period_used, 0) +
+      wallet.invite_bonus_credits
+    );
+  }
+
+  /** For payment webhooks: add purchased invite pack credits. */
+  async addInviteCredits(
+    employerUserId: string,
+    invites: number,
+  ): Promise<void> {
+    const wallet = await this.ensureWallet(employerUserId);
+    wallet.invite_bonus_credits += invites;
+    await this.walletRepo.save(wallet);
+  }
+
   /** For payment webhooks: switch plan and start a fresh period. */
   async activatePlan(
     employerUserId: string,
@@ -190,6 +268,7 @@ export class EmployerBillingService {
     const wallet = await this.ensureWallet(employerUserId);
     wallet.plan = planId;
     wallet.period_used = 0;
+    wallet.invite_period_used = 0;
     wallet.period_start = new Date();
     await this.walletRepo.save(wallet);
   }

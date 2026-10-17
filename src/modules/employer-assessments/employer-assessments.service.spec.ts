@@ -20,6 +20,7 @@ import type { TalentRoleTrack } from '@modules/talent/talent.constants';
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
 import { CredlaneCatalogueQuestion } from './entities/credlane-catalogue-question.entity';
+import { PaymentRequiredError } from '../../shared';
 import { EmployerAssessmentAttempt } from './entities/employer-assessment-attempt.entity';
 import { EmployerSavedCandidate } from '../employer-discovery/entities/employer-saved-candidate.entity';
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
@@ -137,6 +138,7 @@ describe('EmployerAssessmentsService', () => {
 
   const mockExternalInviteRepo = {
     find: jest.fn(),
+    findOne: jest.fn().mockResolvedValue(null),
     save: jest.fn(),
   };
 
@@ -155,6 +157,12 @@ describe('EmployerAssessmentsService', () => {
 
   const mockMailService = {
     send: jest.fn(),
+  };
+
+  const mockBilling = {
+    getUnlockedIds: jest.fn().mockResolvedValue(new Set()),
+    spendInvites: jest.fn().mockResolvedValue({ invites_remaining: 9 }),
+    refundInvites: jest.fn().mockResolvedValue(undefined),
   };
 
   const mockCatalogueRepo = {
@@ -232,7 +240,7 @@ describe('EmployerAssessmentsService', () => {
         },
         {
           provide: EmployerBillingService,
-          useValue: { getUnlockedIds: jest.fn().mockResolvedValue(new Set()) },
+          useValue: mockBilling,
         },
         {
           provide: MailService,
@@ -1230,6 +1238,107 @@ describe('EmployerAssessmentsService', () => {
       await expect(
         service.startAssessment('cand-1', 'token-abc'),
       ).rejects.toThrow('already submitted');
+    });
+  });
+
+  describe('invite metering', () => {
+    const externalAssessment = {
+      id: 'ass-1',
+      is_active: true,
+      type: 'external',
+      share_token: 'token-abc',
+      employer_user_id: 'employer-1',
+      time_limit_minutes: 10,
+    };
+
+    beforeEach(() => {
+      mockBilling.spendInvites.mockResolvedValue({ invites_remaining: 9 });
+      mockAssessmentRepo.findOne.mockResolvedValue(externalAssessment);
+      mockExternalApplicantRepo.findOne.mockResolvedValue(null);
+      mockExternalApplicantRepo.save.mockImplementation(
+        async (data: Record<string, unknown>) => ({
+          id: 'app-1',
+          created_at: new Date(),
+          ...data,
+        }),
+      );
+    });
+
+    it('charges one invite when an uninvited candidate starts via the link', async () => {
+      mockExternalInviteRepo.findOne.mockResolvedValue(null);
+
+      await service.registerExternalApplicant('token-abc', {
+        email: 'new@x.co',
+        consentedMarketing: false,
+      });
+
+      expect(mockBilling.spendInvites).toHaveBeenCalledWith('employer-1', 1);
+    });
+
+    it('does not charge again for a candidate who was invited by email', async () => {
+      mockExternalInviteRepo.findOne.mockResolvedValue({ id: 'inv-1' });
+
+      await service.registerExternalApplicant('token-abc', {
+        email: 'invited@x.co',
+        consentedMarketing: false,
+      });
+
+      expect(mockBilling.spendInvites).not.toHaveBeenCalled();
+    });
+
+    it('turns candidates away politely when the employer is out of invites', async () => {
+      mockExternalInviteRepo.findOne.mockResolvedValue(null);
+      mockBilling.spendInvites.mockRejectedValue(
+        new PaymentRequiredError('No invites left'),
+      );
+
+      await expect(
+        service.registerExternalApplicant('token-abc', {
+          email: 'late@x.co',
+          consentedMarketing: false,
+        }),
+      ).rejects.toThrow("isn't taking new candidates");
+      expect(mockExternalApplicantRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('charges per new email, skips repeats, and refunds bounced emails', async () => {
+      mockExternalInviteRepo.find.mockResolvedValue([{ email: 'old@x.co' }]);
+      mockExternalInviteRepo.save.mockResolvedValue([]);
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'employer-1',
+        is_verified: true,
+      });
+      mockMailService.send
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('bounce'));
+
+      const result = await service.inviteAssessment('employer-1', 'ass-1', {
+        emails: ['old@x.co', 'a@x.co', 'b@x.co'],
+      } as Parameters<typeof service.inviteAssessment>[2]);
+
+      expect(mockBilling.spendInvites).toHaveBeenCalledWith('employer-1', 2);
+      expect(mockBilling.refundInvites).toHaveBeenCalledWith('employer-1', 1);
+      expect(result.invited_count).toBe(1);
+    });
+
+    it('sends nothing when the employer cannot cover the batch', async () => {
+      mockExternalInviteRepo.find.mockResolvedValue([]);
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'employer-1',
+        is_verified: true,
+      });
+      mockBilling.spendInvites.mockRejectedValue(
+        new PaymentRequiredError('Not enough invites'),
+      );
+      mockMailService.send.mockClear();
+
+      await expect(
+        service.inviteAssessment('employer-1', 'ass-1', {
+          emails: ['a@x.co'],
+        } as Parameters<typeof service.inviteAssessment>[2]),
+      ).rejects.toThrow('Not enough invites');
+      expect(mockMailService.send).not.toHaveBeenCalled();
+      expect(mockExternalInviteRepo.save).not.toHaveBeenCalled();
     });
   });
 

@@ -3,7 +3,9 @@ export type EmployerPlanId = 'free' | 'starter' | 'growth';
 export type EmployerPlan = {
   id: EmployerPlanId;
   name: string;
-  /** Profile unlocks included every month. */
+  /** Candidates the employer can assess every month. */
+  monthlyInvites: number;
+  /** Profile unlocks (full name, photo, contact) included every month. */
   monthlyUnlocks: number;
   /** Indicative prices; confirm with employers before charging. */
   priceUsd: number;
@@ -11,47 +13,67 @@ export type EmployerPlan = {
   highlights: string[];
 };
 
+export type InvitePack = {
+  id: string;
+  invites: number;
+  priceUsd: number;
+  priceNgn: number;
+};
+
 /** Every new employer starts with this many one-off unlocks to see the value. */
 export const WELCOME_UNLOCK_CREDITS = 3;
 
+/**
+ * Naira prices sit a little above the dollar price at about 1,500 per dollar,
+ * which covers card and transfer fees and currency swings.
+ */
 export const EMPLOYER_PLANS: readonly EmployerPlan[] = [
   {
     id: 'free',
     name: 'Free',
+    monthlyInvites: 10,
     monthlyUnlocks: 0,
     priceUsd: 0,
     priceNgn: 0,
     highlights: [
-      'Browse verified talent with scores and strengths',
-      'Shortlist talent and send interview invites',
-      'Create roles and assessments',
+      '10 candidates assessed every month',
+      'SkillSift library and your own questions',
       `${WELCOME_UNLOCK_CREDITS} welcome profile unlocks`,
     ],
   },
   {
     id: 'starter',
     name: 'Starter',
-    monthlyUnlocks: 15,
-    priceUsd: 49,
-    priceNgn: 49000,
+    monthlyInvites: 100,
+    monthlyUnlocks: 5,
+    priceUsd: 10,
+    priceNgn: 15000,
     highlights: [
-      '15 profile unlocks every month',
-      'Full name, photo, resume, portfolio and contact',
-      'Top-up unlocks any time',
+      '100 candidates assessed every month',
+      '5 profile unlocks every month',
+      'Buy extra invite packs any time',
     ],
   },
   {
     id: 'growth',
     name: 'Growth',
-    monthlyUnlocks: 50,
-    priceUsd: 129,
-    priceNgn: 129000,
+    monthlyInvites: 500,
+    monthlyUnlocks: 30,
+    priceUsd: 30,
+    priceNgn: 45000,
     highlights: [
-      '50 profile unlocks every month',
-      'Everything in Starter',
+      '500 candidates assessed every month',
+      '30 profile unlocks every month',
       'Priority support',
     ],
   },
+] as const;
+
+/** Prepaid invites that never expire. The more you buy, the less each costs. */
+export const INVITE_PACKS: readonly InvitePack[] = [
+  { id: 'pack_25', invites: 25, priceUsd: 6, priceNgn: 10000 },
+  { id: 'pack_100', invites: 100, priceUsd: 20, priceNgn: 35000 },
+  { id: 'pack_500', invites: 500, priceUsd: 90, priceNgn: 150000 },
 ] as const;
 
 export function getEmployerPlan(id: string): EmployerPlan {

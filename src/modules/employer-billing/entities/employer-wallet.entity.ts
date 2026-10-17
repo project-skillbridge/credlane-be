@@ -31,6 +31,14 @@ export class EmployerWallet {
   @Column({ type: 'int', default: 0 })
   bonus_credits: number;
 
+  /** Candidate invites used in the current monthly period. */
+  @Column({ type: 'int', default: 0 })
+  invite_period_used: number;
+
+  /** Purchased invite packs; these never expire. */
+  @Column({ type: 'int', default: 0 })
+  invite_bonus_credits: number;
+
   @CreateDateColumn({ type: 'timestamp with time zone' })
   created_at: Date;
 

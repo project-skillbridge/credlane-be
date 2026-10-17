@@ -14,6 +14,7 @@ describe('EmployerBillingService', () => {
     findOne: jest.fn(),
     save: jest.fn((w: Partial<EmployerWallet>) => Promise.resolve(w)),
     create: jest.fn((w: Partial<EmployerWallet>) => w),
+    manager: { transaction: jest.fn() },
   };
   const unlockRepo = {
     find: jest.fn(),
@@ -37,6 +38,8 @@ describe('EmployerBillingService', () => {
       employer_user_id: 'emp-1',
       plan: 'free',
       period_used: 0,
+      invite_period_used: 0,
+      invite_bonus_credits: 0,
       period_start: new Date(),
       bonus_credits: 3,
     };
@@ -44,6 +47,9 @@ describe('EmployerBillingService', () => {
     unlockRepo.findOne.mockResolvedValue(null);
     unlockRepo.manager.getRepository.mockImplementation((entity: unknown) =>
       entity === EmployerWallet ? walletRepo : unlockRepo,
+    );
+    walletRepo.manager.transaction.mockImplementation(
+      (cb: (m: unknown) => unknown) => cb(unlockRepo.manager),
     );
     unlockRepo.manager.transaction.mockImplementation(
       (cb: (m: unknown) => unknown) => cb(unlockRepo.manager),
@@ -71,7 +77,7 @@ describe('EmployerBillingService', () => {
     const result = await service.unlock('emp-1', 'cand-1');
     expect(wallet.period_used).toBe(1);
     expect(wallet.bonus_credits).toBe(3);
-    expect(result.unlocks_remaining).toBe(14 + 3);
+    expect(result.unlocks_remaining).toBe(4 + 3);
     expect(unlocks[0]).toMatchObject({ source: 'plan' });
   });
 
@@ -93,12 +99,46 @@ describe('EmployerBillingService', () => {
 
   it('resets the plan quota after a month', async () => {
     wallet.plan = 'starter';
-    wallet.period_used = 15;
+    wallet.period_used = 5;
     wallet.bonus_credits = 0;
     wallet.period_start = new Date(Date.now() - 32 * 86_400_000);
     const result = await service.unlock('emp-1', 'cand-1');
     expect(result.already_unlocked).toBe(false);
     expect(wallet.period_used).toBe(1);
+  });
+
+  describe('invite metering', () => {
+    it('spends the monthly allowance before purchased packs', async () => {
+      wallet.plan = 'free';
+      wallet.invite_period_used = 8;
+      wallet.invite_bonus_credits = 5;
+      const result = await service.spendInvites('emp-1', 4);
+      expect(wallet.invite_period_used).toBe(10);
+      expect(wallet.invite_bonus_credits).toBe(3);
+      expect(result.invites_remaining).toBe(3);
+    });
+
+    it('spends nothing when the batch is too big', async () => {
+      wallet.plan = 'free';
+      wallet.invite_period_used = 8;
+      await expect(service.spendInvites('emp-1', 3)).rejects.toBeInstanceOf(
+        PaymentRequiredError,
+      );
+      expect(wallet.invite_period_used).toBe(8);
+    });
+
+    it('refunds into the month first, then packs', async () => {
+      wallet.invite_period_used = 2;
+      await service.refundInvites('emp-1', 3);
+      expect(wallet.invite_period_used).toBe(0);
+      expect(wallet.invite_bonus_credits).toBe(1);
+    });
+
+    it('resets the monthly invite count after a month', async () => {
+      wallet.invite_period_used = 10;
+      wallet.period_start = new Date(Date.now() - 32 * 86_400_000);
+      expect(await service.invitesRemaining('emp-1')).toBe(10);
+    });
   });
 
   it('summarises remaining unlocks', async () => {
@@ -108,10 +148,12 @@ describe('EmployerBillingService', () => {
     const summary = await service.getSummary('emp-1');
     expect(summary).toMatchObject({
       plan: 'growth',
-      monthly_unlocks: 50,
+      monthly_unlocks: 30,
       used_this_period: 10,
       bonus_credits: 3,
-      unlocks_remaining: 43,
+      monthly_invites: 500,
+      invites_remaining: 500,
+      unlocks_remaining: 23,
       total_unlocked: 10,
     });
   });
