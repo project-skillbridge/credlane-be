@@ -965,7 +965,7 @@ describe('SkillAssessmentService', () => {
           execute: jest.fn().mockResolvedValue(undefined),
         };
         const manager: EntityManagerLike = {
-          findOne: jest.fn(),
+          findOne: jest.fn().mockResolvedValue(attempt),
           getRepository: jest.fn(() => attemptRepo),
           createQueryBuilder: jest.fn(() => ({
             insert: jest.fn(() => insertBuilder),
@@ -1000,6 +1000,12 @@ describe('SkillAssessmentService', () => {
     expect(
       notificationDispatch.notifySkillAssessmentPassed,
     ).not.toHaveBeenCalled();
+    // Completion is a targeted update, so a stale copy can't overwrite flags.
+    expect(updateMock).toHaveBeenCalledWith(
+      AssessmentAttempt,
+      { id: 'attempt-1' },
+      { completed_at: expect.any(Date) },
+    );
     expect(updateMock).toHaveBeenCalledWith(
       TalentProfile,
       { id: profile.id },
@@ -1018,6 +1024,93 @@ describe('SkillAssessmentService', () => {
       claimed_level: VerifiedLevel.MID,
       validated_level: VerifiedLevel.JUNIOR,
       percentage: 0,
+    });
+  });
+
+  describe('submit() concurrency guards', () => {
+    function mockLockedAttempt(locked: Partial<AssessmentAttempt>) {
+      const attempt = Object.assign(new AssessmentAttempt(), {
+        id: 'attempt-1',
+        talent_profile_id: profile.id,
+        assessment_type: AssessmentType.SKILL,
+        started_at: new Date(),
+        completed_at: null,
+        force_submitted: false,
+        generated_questions_json: {
+          context: { verified_level: VerifiedLevel.MID },
+          questions: [
+            {
+              question_id: 'question-mcq-1',
+              question_number: 1,
+              block: 'mcq',
+              question_type: QuestionType.SINGLE_PICK,
+              question_text: 'Which is right?',
+              options: ['A', 'B'],
+              correct_answer: 'A',
+            },
+          ],
+        },
+      });
+      attemptRepo.findOne.mockResolvedValue(attempt);
+      questionRepo.findBy.mockResolvedValue([
+        Object.assign(new AssessmentQuestion(), {
+          id: 'question-mcq-1',
+          metadata: {},
+        }),
+      ]);
+      const save = jest.fn();
+      const update = jest.fn();
+      talentProfileRepo.manager.transaction.mockImplementation(
+        async (work: (manager: EntityManagerLike) => Promise<unknown>) =>
+          work({
+            findOne: jest
+              .fn()
+              .mockResolvedValue(Object.assign(attempt, locked)),
+            getRepository: jest.fn(() => attemptRepo),
+            createQueryBuilder: jest.fn(),
+            save,
+            update,
+            create: jest.fn((_entity: unknown, data: unknown) => data),
+          }),
+      );
+      return { save, update };
+    }
+
+    it('rejects a second submit once the attempt is already completed', async () => {
+      const { save, update } = mockLockedAttempt({
+        completed_at: new Date(),
+      });
+
+      await expect(
+        service.submit(userId, {
+          attemptId: 'attempt-1',
+          answers: [{ questionId: 'question-mcq-1', answer: 'A' }],
+        }),
+      ).rejects.toThrow(
+        ErrorMessages.SKILL_ASSESSMENT.ATTEMPT_ALREADY_SUBMITTED,
+      );
+      expect(save).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(guidanceReportQueue.enqueue).not.toHaveBeenCalled();
+      expect(
+        notificationDispatch.notifySkillAssessmentPassed,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('does not score a session that was voided while the submit was in flight', async () => {
+      const { save, update } = mockLockedAttempt({ force_submitted: true });
+
+      await expect(
+        service.submit(userId, {
+          attemptId: 'attempt-1',
+          answers: [{ questionId: 'question-mcq-1', answer: 'A' }],
+        }),
+      ).rejects.toThrow(ErrorMessages.SKILL_ASSESSMENT.SESSION_VOIDED);
+      expect(save).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(
+        notificationDispatch.notifySkillAssessmentPassed,
+      ).not.toHaveBeenCalled();
     });
   });
 

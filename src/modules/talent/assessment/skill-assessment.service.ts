@@ -917,18 +917,31 @@ export class SkillAssessmentService {
     const passed = !failed && validatedLevel !== null;
     const tier = this.resolveSkillTier(percentage);
 
-    if (!passed) {
-      void this.guidanceReportQueue.enqueue({
-        attemptId: attempt.id,
-        track: profile.track ?? 'general',
-        claimed_level: claimed,
-        validated_level:
-          validatedLevel ?? profile.validated_level ?? VerifiedLevel.JUNIOR,
-        percentage,
-      });
-    }
-
     await this.talentProfileRepo.manager.transaction(async (manager) => {
+      // Lock the attempt and re-check it here: the reads above happen outside
+      // the transaction, so a double submit or a violation that voids the
+      // session in the meantime would otherwise be scored anyway.
+      const lockedAttempt = await manager.findOne(AssessmentAttempt, {
+        where: {
+          id: attempt.id,
+          talent_profile_id: profile.id,
+          assessment_type: AssessmentType.SKILL,
+        },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!lockedAttempt) {
+        throw new NotFoundException(
+          ErrorMessages.SKILL_ASSESSMENT.ATTEMPT_NOT_FOUND,
+        );
+      }
+      if (lockedAttempt.completed_at || lockedAttempt.force_submitted) {
+        throw new BadRequestException(
+          lockedAttempt.force_submitted
+            ? ErrorMessages.SKILL_ASSESSMENT.SESSION_VOIDED
+            : ErrorMessages.SKILL_ASSESSMENT.ATTEMPT_ALREADY_SUBMITTED,
+        );
+      }
+
       await manager.save(AssessmentResponse, responsesToSave);
       if (historyPatches.size > 0) {
         const historyValues = Array.from(
@@ -963,8 +976,13 @@ export class SkillAssessmentService {
           .execute();
       }
 
-      attempt.completed_at = new Date();
-      await manager.save(AssessmentAttempt, attempt);
+      // A targeted update, not a full save, so nothing else on the row (such
+      // as force_submitted) is overwritten with a stale copy.
+      await manager.update(
+        AssessmentAttempt,
+        { id: attempt.id },
+        { completed_at: new Date() },
+      );
 
       const result = manager.create(AssessmentResult, {
         attempt_id: attempt.id,
@@ -998,6 +1016,19 @@ export class SkillAssessmentService {
         );
       }
     });
+
+    // Only after the result is committed, so a failed submit never leaves a
+    // report job behind for a result that doesn't exist.
+    if (!passed) {
+      void this.guidanceReportQueue.enqueue({
+        attemptId: attempt.id,
+        track: profile.track ?? 'general',
+        claimed_level: claimed,
+        validated_level:
+          validatedLevel ?? profile.validated_level ?? VerifiedLevel.JUNIOR,
+        percentage,
+      });
+    }
 
     this.logger.log(
       `Skill assessment submitted: attempt=${attempt.id} user=${userId} score=${totalScore}/${totalMaxScore} pct=${percentage} validated=${validatedLevel ?? 'n/a'} failed=${failed} passed=${passed} downgraded=${downgraded}`,
