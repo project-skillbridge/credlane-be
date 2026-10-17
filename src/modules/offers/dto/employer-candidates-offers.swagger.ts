@@ -107,14 +107,9 @@ export class OfferStatusChangeEventDto {
   roleTitle: string;
 
   @ApiProperty({
-    enum: [
-      OfferStatus.ACCEPTED,
-      OfferStatus.DECLINED,
-    ],
+    enum: [OfferStatus.ACCEPTED, OfferStatus.DECLINED],
   })
-  status:
-    | OfferStatus.ACCEPTED
-    | OfferStatus.DECLINED;
+  status: OfferStatus.ACCEPTED | OfferStatus.DECLINED;
 
   @ApiProperty({ type: String, format: 'date-time' })
   respondedAt: string;

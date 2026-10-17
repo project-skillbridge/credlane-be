@@ -145,17 +145,9 @@ export class DashboardService {
       this.employerSavedCandidateRepository.count({
         where: { employer_user_id: userId },
       }),
-      this.employerAssessmentSubmissionRepository
-        .createQueryBuilder('sub')
-        .innerJoin(
-          'employer_assessments',
-          'ea',
-          'ea.id = sub.assessment_id AND ea.employer_user_id = :uid',
-          { uid: userId },
-        )
-        .select('COUNT(DISTINCT sub.assessment_id)', 'cnt')
-        .getRawOne<{ cnt: string }>()
-        .then((r) => parseInt(r?.cnt ?? '0', 10)),
+      this.employerAssessmentRepository.count({
+        where: { employer_user_id: userId },
+      }),
       this.offerRepository.count({
         where: { employer_user_id: userId },
       }),

@@ -237,15 +237,11 @@ describe('AdminOffersService', () => {
       const result = await service.findAll({ page: 1, limit: 20 });
 
       expect(result.offers[0].employer_name).toBe('Alice Corp');
-      expect(result.offers[0].date_resolved).toEqual(
-        new Date('2026-02-05'),
-      );
+      expect(result.offers[0].date_resolved).toEqual(new Date('2026-02-05'));
     });
 
     it('returns empty result when no offers match', async () => {
-      offerRepo.createQueryBuilder.mockReturnValue(
-        buildQueryBuilder([[], 0]),
-      );
+      offerRepo.createQueryBuilder.mockReturnValue(buildQueryBuilder([[], 0]));
 
       const result = await service.findAll({ page: 1, limit: 20 });
 
@@ -265,10 +261,20 @@ describe('AdminOffersService', () => {
         search: 'Jane',
       });
 
-      expect(qb.andWhere).toHaveBeenCalledWith('offer.status = :status', { status: OfferStatus.ACCEPTED });
-      expect(qb.andWhere).toHaveBeenCalledWith('offer.created_at >= :dateFrom', { dateFrom: expect.any(Date) });
-      expect(qb.andWhere).toHaveBeenCalledWith('offer.created_at < :dateTo', { dateTo: expect.any(Date) });
-      expect(qb.andWhere).toHaveBeenCalledWith(expect.stringContaining('ILIKE :search'), { search: '%Jane%' });
+      expect(qb.andWhere).toHaveBeenCalledWith('offer.status = :status', {
+        status: OfferStatus.ACCEPTED,
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'offer.created_at >= :dateFrom',
+        { dateFrom: expect.any(Date) },
+      );
+      expect(qb.andWhere).toHaveBeenCalledWith('offer.created_at < :dateTo', {
+        dateTo: expect.any(Date),
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('ILIKE :search'),
+        { search: '%Jane%' },
+      );
     });
 
     it('applies correct pagination skip and take for page > 1', async () => {

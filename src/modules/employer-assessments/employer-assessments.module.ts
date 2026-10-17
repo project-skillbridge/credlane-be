@@ -19,11 +19,13 @@ import {
   EmployerAssessmentExternalInvite,
   EmployerAssessmentExternalSubmission,
 } from './entities';
+import { EmployerBillingModule } from '../employer-billing/employer-billing.module';
 import { EmployerAssessmentsController } from './employer-assessments.controller';
 import { EmployerAssessmentsService } from './employer-assessments.service';
 
 @Module({
   imports: [
+    EmployerBillingModule,
     TypeOrmModule.forFeature([
       EmployerAssessment,
       EmployerAssessmentQuestion,

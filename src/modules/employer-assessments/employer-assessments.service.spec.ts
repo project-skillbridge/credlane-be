@@ -27,6 +27,7 @@ import { EmployerRole } from '../employer-roles/entities/employer-role.entity';
 import { User } from '../users/entities/user.entity';
 import { NotificationDispatchService } from '../notifications/notification-dispatch.service';
 import { Offer, OfferStatus } from '../offers/entities/offer.entity';
+import { EmployerBillingService } from '../employer-billing/employer-billing.service';
 import { MailService } from '../mail/mail.service';
 import { EmployerAssessmentExternalApplicant } from './entities/employer-assessment-external-applicant.entity';
 import { EmployerAssessmentExternalInvite } from './entities/employer-assessment-external-invite.entity';
@@ -204,6 +205,10 @@ describe('EmployerAssessmentsService', () => {
           useValue: mockNotificationDispatch,
         },
         {
+          provide: EmployerBillingService,
+          useValue: { getUnlockedIds: jest.fn().mockResolvedValue(new Set()) },
+        },
+        {
           provide: MailService,
           useValue: mockMailService,
         },
@@ -222,6 +227,13 @@ describe('EmployerAssessmentsService', () => {
       EmployerAssessmentsService,
     );
     jest.clearAllMocks();
+    // Aggregates need real query builders; default to "no activity".
+    jest
+      .spyOn(
+        service as unknown as { loadAssessmentStats: () => Promise<unknown> },
+        'loadAssessmentStats',
+      )
+      .mockResolvedValue(new Map());
   });
 
   // ─── createAssessment ──────────────────────────────────────────────────────
@@ -455,7 +467,7 @@ describe('EmployerAssessmentsService', () => {
       expect(result.title).toBe('Frontend Assessment');
       expect(result.questions).toHaveLength(1);
       expect(result.questions[0].question_text).toBe('What is React?');
-      expect(result.shareUrl).toContain('/assessments/token-abc');
+      expect(result.shareUrl).toContain('/assessment/token-abc');
       expect(mockAssessmentRepo.findOne).toHaveBeenCalledWith({
         where: { id: 'ass-1', employer_user_id: 'emp-1' },
         relations: ['questions'],
@@ -991,9 +1003,39 @@ describe('EmployerAssessmentsService', () => {
         },
       ]);
 
+      jest
+        .spyOn(
+          service as unknown as { loadAssessmentStats: () => Promise<unknown> },
+          'loadAssessmentStats',
+        )
+        .mockResolvedValue(
+          new Map([
+            [
+              'ass-1',
+              {
+                talents: 4,
+                submissions: 2,
+                passed: 1,
+                lastActivityAt: new Date('2026-05-03T00:00:00.000Z'),
+              },
+            ],
+          ]),
+        );
+
       const result = await service.listAssessments('emp-1');
 
       expect(result.assessments).toHaveLength(2);
+      expect(result.assessments[0]).toMatchObject({
+        submission_count: 2,
+        talents_count: 4,
+        pass_rate: 50,
+      });
+      expect(result.assessments[1]).toMatchObject({
+        submission_count: 0,
+        talents_count: 0,
+        pass_rate: null,
+        last_activity_at: null,
+      });
       expect(result.emptyState).toBeNull();
       expect(mockAssessmentRepo.find).toHaveBeenCalledWith({
         where: { employer_user_id: 'emp-1' },
@@ -1066,12 +1108,10 @@ describe('EmployerAssessmentsService', () => {
           {
             candidateUserId: 'candidate-1',
             fullName: 'Ada Lovelace',
-            email: 'ada@example.com',
           },
           {
             candidateUserId: 'candidate-2',
             fullName: 'Grace Hopper',
-            email: 'grace@example.com',
           },
         ],
         total: 2,

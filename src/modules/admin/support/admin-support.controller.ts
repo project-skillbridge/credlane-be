@@ -130,7 +130,14 @@ export class AdminSupportController {
   @ApiQuery({
     name: 'type',
     required: false,
-    enum: ['account', 'assessment', 'employer', 'payment', 'technical', 'other'],
+    enum: [
+      'account',
+      'assessment',
+      'employer',
+      'payment',
+      'technical',
+      'other',
+    ],
     example: 'technical',
   })
   @ApiQuery({

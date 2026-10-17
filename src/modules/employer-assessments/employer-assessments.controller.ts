@@ -96,11 +96,13 @@ export class EmployerAssessmentsController {
     @CurrentUser('sub') employerUserId: string,
     @Query('q') q?: string,
     @Query('limit') limit?: number,
+    @Query('track') track?: string,
   ) {
     return this.employerAssessmentsService.searchVerifiedTalent(
       employerUserId,
       q ?? '',
       Number(limit ?? 10),
+      track,
     );
   }
 
@@ -111,7 +113,7 @@ export class EmployerAssessmentsController {
     response.setHeader('Content-Type', 'text/csv');
     response.setHeader(
       'Content-Disposition',
-      'attachment; filename="credlane-question-template.csv"',
+      'attachment; filename="skillsift-question-template.csv"',
     );
     response.send(this.employerAssessmentsService.getTemplateCsv());
   }
@@ -126,7 +128,7 @@ export class EmployerAssessmentsController {
     );
     response.setHeader(
       'Content-Disposition',
-      'attachment; filename="credlane-question-template.xlsx"',
+      'attachment; filename="skillsift-question-template.xlsx"',
     );
     response.send(this.employerAssessmentsService.getTemplateXlsx());
   }
@@ -259,7 +261,10 @@ export class EmployerAssessmentsController {
     @Param('token') token: string,
     @Body() dto: RegisterExternalAssessmentDto,
   ) {
-    return this.employerAssessmentsService.registerExternalApplicant(token, dto);
+    return this.employerAssessmentsService.registerExternalApplicant(
+      token,
+      dto,
+    );
   }
 
   @Post('assessments/external/:token/submit')

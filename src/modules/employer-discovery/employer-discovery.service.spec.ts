@@ -8,6 +8,7 @@ import { User } from '../users/entities/user.entity';
 import { NotificationDispatchService } from '../notifications/notification-dispatch.service';
 import { EmployerVerificationService } from '../employer/employer-verification.service';
 import { Offer } from '../offers/entities/offer.entity';
+import { EmployerBillingService } from '../employer-billing/employer-billing.service';
 import { VerifiedProfileService } from '../verified-profile/verified-profile.service';
 import { ForbiddenError, NotFoundError } from '../../shared';
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
@@ -55,6 +56,12 @@ describe('EmployerDiscoveryService', () => {
     getForEmployerView: jest.fn(),
   };
 
+  const mockBillingService = {
+    getUnlockedIds: jest.fn(),
+    isUnlocked: jest.fn(),
+    unlock: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -92,6 +99,10 @@ describe('EmployerDiscoveryService', () => {
           useValue: mockVerificationService,
         },
         {
+          provide: EmployerBillingService,
+          useValue: mockBillingService,
+        },
+        {
           provide: VerifiedProfileService,
           useValue: mockVerifiedProfileService,
         },
@@ -99,6 +110,8 @@ describe('EmployerDiscoveryService', () => {
     }).compile();
 
     service = module.get<EmployerDiscoveryService>(EmployerDiscoveryService);
+    mockBillingService.getUnlockedIds.mockResolvedValue(new Set());
+    mockBillingService.isUnlocked.mockResolvedValue(false);
     jest.clearAllMocks();
     mockVerificationService.assertEmployerVerified.mockResolvedValue(undefined);
     mockOfferRepo.createQueryBuilder.mockReturnValue(createOfferQb());
@@ -164,12 +177,51 @@ describe('EmployerDiscoveryService', () => {
         mockVerifiedProfileService.getForEmployerView,
       ).toHaveBeenCalledWith('user-1');
       expect(result.user_id).toBe('user-1');
-      expect(result.full_name).toBe('Jane Doe');
+      expect(result.full_name).toBe('Jane D.');
+      expect(result.is_unlocked).toBe(false);
+      expect(result.avatar_url).toBeNull();
+      expect(result.resume_url).toBeNull();
+      expect(result.email).toBe('');
+      expect(result.portfolio_url).toBeNull();
       expect(result.score_percentage).toBe(85);
       expect(result.is_saved).toBe(true);
       expect(result.offer_sent).toBe(true);
       expect(result.offer_status).toBe('pending');
       expect(result.is_owner).toBe(false);
+    });
+
+    it('should reveal the full profile once the employer has unlocked it', async () => {
+      mockBillingService.isUnlocked.mockResolvedValue(true);
+      mockPoolProfileRepo.findOne.mockResolvedValue({
+        talent_profile: {
+          personal_website: 'https://jane.dev',
+          linkedin_url: 'https://linkedin.com/in/jane',
+        },
+      });
+      mockVerifiedProfileService.getForEmployerView.mockResolvedValue({
+        full_name: 'Jane Doe',
+        avatar_url: 'https://example.com/a.jpg',
+        email: 'jane@example.com',
+        resume_url: 'https://example.com/r.pdf',
+        share_url: 'https://example.com/share',
+        qr_code_url: null,
+      });
+      mockSavedCandidateRepo.createQueryBuilder.mockReturnValue(
+        createSavedQb([]),
+      );
+      mockOfferRepo.createQueryBuilder.mockReturnValue(createOfferQb([]));
+
+      const result = await service.getCandidateProfile('employer-1', 'user-1');
+
+      expect(result).toMatchObject({
+        full_name: 'Jane Doe',
+        avatar_url: 'https://example.com/a.jpg',
+        email: 'jane@example.com',
+        resume_url: 'https://example.com/r.pdf',
+        portfolio_url: 'https://jane.dev',
+        linkedin_url: 'https://linkedin.com/in/jane',
+        is_unlocked: true,
+      });
     });
 
     it('should throw NotFoundError if candidate not in pool', async () => {
@@ -382,14 +434,13 @@ describe('EmployerDiscoveryService', () => {
 
       expect(result.total).toBe(1);
       expect(result.candidates[0].user_id).toBe('user-1');
-      expect(result.candidates[0].full_name).toBe('Alice Dev');
+      expect(result.candidates[0].full_name).toBe('Alice D.');
+      expect(result.candidates[0].is_unlocked).toBe(false);
       expect(result.candidates[0].role).toBe('Frontend Developer');
       expect(result.candidates[0].seniority_badge).toBe('Mid Level');
       expect(result.candidates[0].score).toBe(85);
       expect(result.candidates[0].skills).toEqual(['react', 'typescript']);
-      expect(result.candidates[0].avatar_url).toBe(
-        'https://example.com/alice.jpg',
-      );
+      expect(result.candidates[0].avatar_url).toBeNull();
       expect(result.candidates[0].is_saved).toBe(true);
       expect(result.total_pages).toBe(1);
     });
@@ -485,8 +536,24 @@ describe('EmployerDiscoveryService', () => {
       });
 
       expect(poolQb.andWhere).toHaveBeenCalledWith(
-        '(pool.location ILIKE :region OR u.country ILIKE :region)',
-        { region: '%Nigeria%' },
+        '((pool.location ILIKE :region0 OR u.country ILIKE :region0))',
+        { region0: '%Nigeria%' },
+      );
+    });
+
+    it('should match any of several comma-separated regions', async () => {
+      const poolQb = createMockQb([], 0);
+      mockPoolProfileRepo.createQueryBuilder.mockReturnValue(poolQb);
+
+      await service.discoverCandidates('employer-1', {
+        page: 1,
+        limit: 20,
+        region: 'Nigeria, Ghana',
+      });
+
+      expect(poolQb.andWhere).toHaveBeenCalledWith(
+        '((pool.location ILIKE :region0 OR u.country ILIKE :region0) OR (pool.location ILIKE :region1 OR u.country ILIKE :region1))',
+        { region0: '%Nigeria%', region1: '%Ghana%' },
       );
     });
 

@@ -79,6 +79,7 @@ export const talentSeeder: Seeder = {
           first_name: firstName,
           last_name: lastName,
           country,
+          avatar_url: `https://i.pravatar.cc/300?u=${encodeURIComponent(email)}`,
           is_verified: true,
           onboarding_complete: true,
           role: UserRole.TALENT
@@ -117,7 +118,10 @@ export const talentSeeder: Seeder = {
             answers: []
           },
           bio: `Experienced ${trackLabel} with a strong background in developing scalable solutions. Passionate about building high-quality software and collaborating in cross-functional teams.`,
-          region: country
+          region: country,
+          resume_url: `https://example.com/resume/${encodeURIComponent(email)}.pdf`,
+          resume_filename: 'resume.pdf',
+          personal_website: `https://portfolio.example.com/${encodeURIComponent(email)}`
         });
         await profileRepo.save(profile);
 

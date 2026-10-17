@@ -426,12 +426,7 @@ export class OffersService {
       });
 
     // Notify candidate
-    const employer = await this.userRepo.findOne({
-      where: { id: employerUserId },
-    });
-    const employerName = employer
-      ? `${employer.first_name ?? ''} ${employer.last_name ?? ''}`.trim()
-      : 'An employer';
+    const employerName = await this.resolveEmployerDisplayName(employerUserId);
 
     try {
       await this.notificationDispatch.notifyOfferReceived(candidateUserId, {
@@ -530,7 +525,7 @@ export class OffersService {
     });
 
     return {
-      offers,
+      offers: offers.map((o) => this.withMaskedCandidate(o)),
       total,
       page,
       limit,
@@ -645,15 +640,21 @@ export class OffersService {
     const profiles = employerUserIds.length
       ? await this.employerProfileRepo.find({
           where: employerUserIds.map((id) => ({ user_id: id })),
-          select: ['user_id', 'is_verified'],
+          select: ['user_id', 'is_verified', 'company_name'],
         })
       : [];
     const verifiedMap = new Map(
       profiles.map((p) => [p.user_id, p.is_verified]),
     );
+    const companyMap = new Map(
+      profiles.map((p) => [p.user_id, p.company_name]),
+    );
 
     const enrichedOffers = offers.map((offer) => ({
-      ...offer,
+      ...this.withTalentFacingEmployer(
+        offer,
+        companyMap.get(offer.employer_user_id),
+      ),
       is_employer_verified: verifiedMap.get(offer.employer_user_id) ?? false,
     }));
 
@@ -679,7 +680,7 @@ export class OffersService {
       throw new NotFoundError('Offer not found');
     }
 
-    return this.checkAndUpdateExpiry(offer);
+    return this.withMaskedCandidate(await this.checkAndUpdateExpiry(offer));
   }
 
   async getOfferForCandidate(
@@ -698,13 +699,66 @@ export class OffersService {
     const checked = await this.checkAndUpdateExpiry(offer);
     const profile = await this.employerProfileRepo.findOne({
       where: { user_id: checked.employer_user_id },
-      select: ['is_verified'],
+      select: ['is_verified', 'company_name'],
     });
 
     return {
-      ...checked,
+      ...this.withTalentFacingEmployer(checked, profile?.company_name),
       is_employer_verified: profile?.is_verified ?? false,
     };
+  }
+
+  /** Company name when set, otherwise the account holder's name. */
+  private async resolveEmployerDisplayName(
+    employerUserId: string,
+  ): Promise<string> {
+    const profile = await this.employerProfileRepo.findOne({
+      where: { user_id: employerUserId },
+      select: ['user_id', 'company_name'],
+    });
+    if (profile?.company_name?.trim()) return profile.company_name.trim();
+    const employer = await this.userRepo.findOne({
+      where: { id: employerUserId },
+    });
+    return employer
+      ? `${employer.first_name ?? ''} ${employer.last_name ?? ''}`.trim()
+      : 'An employer';
+  }
+
+  /**
+   * Employers see who they invited, but never the candidate's contact or
+   * account fields: those are part of the paid unlock.
+   */
+  private withMaskedCandidate<T extends Offer>(offer: T): T {
+    const c = offer.candidate;
+    if (!c) return offer;
+    offer.candidate = {
+      id: c.id,
+      first_name: c.first_name,
+      last_name: c.last_name,
+      fullname: `${c.first_name} ${c.last_name}`.trim(),
+      country: c.country,
+    } as unknown as User;
+    return offer;
+  }
+
+  /** Talents see the company, not the employer user's account record. */
+  private withTalentFacingEmployer<T extends Offer>(
+    offer: T,
+    companyName?: string | null,
+  ): T {
+    const e = offer.employer;
+    if (!e) return offer;
+    const name = companyName?.trim() || `${e.first_name} ${e.last_name}`.trim();
+    offer.employer = {
+      id: e.id,
+      first_name: name,
+      last_name: '',
+      fullname: name,
+      avatar_url: e.avatar_url,
+      country: e.country,
+    } as unknown as User;
+    return offer;
   }
 
   async updateInterviewLink(
@@ -1027,12 +1081,8 @@ export class OffersService {
 
     // Notify candidate
     try {
-      const employer = await this.userRepo.findOne({
-        where: { id: employerUserId },
-      });
-      const employerName = employer
-        ? `${employer.first_name ?? ''} ${employer.last_name ?? ''}`.trim()
-        : 'An employer';
+      const employerName =
+        await this.resolveEmployerDisplayName(employerUserId);
       await this.notificationDispatch.notifyOfferWithdrawn(
         offer.candidate_user_id,
         {

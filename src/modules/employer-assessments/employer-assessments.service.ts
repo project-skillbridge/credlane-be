@@ -28,6 +28,7 @@ import { EmployerSavedCandidate } from '../employer-discovery/entities/employer-
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
 import { EmployerRole } from '../employer-roles/entities/employer-role.entity';
 import { EmployerPoolProfile } from '../talent/entities/employer-pool-profile.entity';
+import { EmployerBillingService } from '../employer-billing/employer-billing.service';
 import { MailService } from '../mail/mail.service';
 import { NotificationDispatchService } from '../notifications/notification-dispatch.service';
 import { NotificationType } from '../notifications/notification-type.enum';
@@ -158,6 +159,7 @@ export class EmployerAssessmentsService {
     private readonly catalogueRepo: Repository<CredlaneCatalogueAssessment>,
     private readonly notificationDispatch: NotificationDispatchService,
     private readonly mailService: MailService,
+    private readonly billingService: EmployerBillingService,
   ) {}
 
   async createAssessment(
@@ -292,9 +294,111 @@ export class EmployerAssessmentsService {
     });
   }
 
+  /** Per-assessment invite/submission aggregates for the list view. */
+  private async loadAssessmentStats(ids: string[]): Promise<
+    Map<
+      string,
+      {
+        talents: number;
+        submissions: number;
+        passed: number;
+        lastActivityAt: Date | null;
+      }
+    >
+  > {
+    const out = new Map<
+      string,
+      {
+        talents: number;
+        submissions: number;
+        passed: number;
+        lastActivityAt: Date | null;
+      }
+    >();
+    if (!ids.length) return out;
+    const entry = (id: string) => {
+      let e = out.get(id);
+      if (!e) {
+        e = { talents: 0, submissions: 0, passed: 0, lastActivityAt: null };
+        out.set(id, e);
+      }
+      return e;
+    };
+    const bump = (e: { lastActivityAt: Date | null }, at: Date | string) => {
+      const d = new Date(at);
+      if (!e.lastActivityAt || d > e.lastActivityAt) e.lastActivityAt = d;
+    };
+
+    const [invites, extInvites, subs, extSubs] = await Promise.all([
+      this.inviteRepo
+        .createQueryBuilder('i')
+        .select('i.assessment_id', 'id')
+        .addSelect('COUNT(*)', 'count')
+        .addSelect('MAX(i.sent_at)', 'last')
+        .where('i.assessment_id IN (:...ids)', { ids })
+        .groupBy('i.assessment_id')
+        .getRawMany<{ id: string; count: string; last: string }>(),
+      this.externalInviteRepo
+        .createQueryBuilder('i')
+        .select('i.assessment_id', 'id')
+        .addSelect('COUNT(*)', 'count')
+        .addSelect('MAX(i.sent_at)', 'last')
+        .where('i.assessment_id IN (:...ids)', { ids })
+        .groupBy('i.assessment_id')
+        .getRawMany<{ id: string; count: string; last: string }>(),
+      this.submissionRepo
+        .createQueryBuilder('s')
+        .select('s.assessment_id', 'id')
+        .addSelect('COUNT(*)', 'count')
+        .addSelect('COUNT(*) FILTER (WHERE s.passed)', 'passed')
+        .addSelect('MAX(s.completed_at)', 'last')
+        .where('s.assessment_id IN (:...ids)', { ids })
+        .groupBy('s.assessment_id')
+        .getRawMany<{
+          id: string;
+          count: string;
+          passed: string;
+          last: string;
+        }>(),
+      this.externalSubmissionRepo
+        .createQueryBuilder('s')
+        .select('s.assessment_id', 'id')
+        .addSelect('COUNT(*)', 'count')
+        .addSelect('COUNT(*) FILTER (WHERE s.passed)', 'passed')
+        .addSelect('MAX(s.submitted_at)', 'last')
+        .where('s.assessment_id IN (:...ids)', { ids })
+        .groupBy('s.assessment_id')
+        .getRawMany<{
+          id: string;
+          count: string;
+          passed: string;
+          last: string;
+        }>(),
+    ]);
+
+    for (const r of [...invites, ...extInvites]) {
+      const e = entry(r.id);
+      e.talents += parseInt(r.count, 10);
+      if (r.last) bump(e, r.last);
+    }
+    for (const r of [...subs, ...extSubs]) {
+      const e = entry(r.id);
+      e.submissions += parseInt(r.count, 10);
+      e.passed += parseInt(r.passed, 10);
+      if (r.last) bump(e, r.last);
+    }
+    return out;
+  }
+
   async listAssessments(employerUserId: string): Promise<{
     assessments: Array<
-      EmployerAssessment & { submission_count: number; status: string }
+      EmployerAssessment & {
+        submission_count: number;
+        talents_count: number;
+        pass_rate: number | null;
+        last_activity_at: Date | null;
+        status: string;
+      }
     >;
     emptyState: string | null;
   }> {
@@ -305,32 +409,26 @@ export class EmployerAssessmentsService {
       relations: ['questions'],
     });
 
-    const submissionCounts: Array<{ assessmentId: string; count: string }> =
-      assessments.length
-        ? await this.submissionRepo
-            .createQueryBuilder('sub')
-            .select('sub.assessment_id', 'assessmentId')
-            .addSelect('COUNT(*)', 'count')
-            .where('sub.assessment_id IN (:...ids)', {
-              ids: assessments.map((a) => a.id),
-            })
-            .groupBy('sub.assessment_id')
-            .getRawMany()
-        : [];
-
-    const countMap = new Map(
-      submissionCounts.map((r) => [r.assessmentId, parseInt(r.count, 10)]),
-    );
+    const ids = assessments.map((a) => a.id);
+    const stats = await this.loadAssessmentStats(ids);
 
     return {
-      assessments: assessments.map((a) => ({
-        ...a,
-        token:
-          a.type === EmployerAssessmentType.EXTERNAL ? a.share_token : null,
-        share_url: this.buildShareUrl(a.share_token),
-        submission_count: countMap.get(a.id) ?? 0,
-        status: a.is_active ? 'active' : 'inactive',
-      })),
+      assessments: assessments.map((a) => {
+        const st = stats.get(a.id);
+        return {
+          ...a,
+          token:
+            a.type === EmployerAssessmentType.EXTERNAL ? a.share_token : null,
+          share_url: this.buildShareUrl(a.share_token),
+          submission_count: st?.submissions ?? 0,
+          talents_count: st?.talents ?? 0,
+          pass_rate: st?.submissions
+            ? Math.round((st.passed / st.submissions) * 100)
+            : null,
+          last_activity_at: st?.lastActivityAt ?? null,
+          status: a.is_active ? 'active' : 'inactive',
+        };
+      }),
       emptyState:
         assessments.length === 0
           ? 'No assessments yet. Create your first assessment to start screening candidates.'
@@ -406,7 +504,12 @@ export class EmployerAssessmentsService {
       resultQuery ?? {},
     );
 
+    const stats = (await this.loadAssessmentStats([assessment.id])).get(
+      assessment.id,
+    );
+
     return Object.assign(assessment, {
+      talents_count: stats?.talents ?? 0,
       shareUrl: this.buildShareUrl(assessment.share_token),
       share_url: this.buildShareUrl(assessment.share_token),
       token:
@@ -600,6 +703,7 @@ export class EmployerAssessmentsService {
     employerUserId: string,
     q = '',
     limit = 10,
+    track?: string,
   ): Promise<{
     results: Array<Record<string, unknown>>;
   }> {
@@ -612,31 +716,47 @@ export class EmployerAssessmentsService {
 
     if (search) {
       qb.andWhere(
-        `(u.email ILIKE :search OR u.first_name ILIKE :search OR u.last_name ILIKE :search OR CONCAT(u.first_name, ' ', u.last_name) ILIKE :search)`,
+        `(u.first_name ILIKE :search OR u.last_name ILIKE :search OR CONCAT(u.first_name, ' ', u.last_name) ILIKE :search)`,
         { search: `%${search}%` },
       );
     }
 
+    qb.select([
+      'u.id AS "userId"',
+      'u.first_name AS "firstName"',
+      'u.last_name AS "lastName"',
+      'pool.track AS "roleTrack"',
+      'pool.verified_level AS "verifiedLevel"',
+    ]);
+
+    // Talent on the requested track first, then most recently verified.
+    if (track) {
+      qb.setParameter('track', track).orderBy(
+        '(CASE WHEN pool.track = :track THEN 0 ELSE 1 END)',
+        'ASC',
+      );
+      qb.addOrderBy('pool.verified_at', 'DESC');
+    } else {
+      qb.orderBy('pool.verified_at', 'DESC');
+    }
+
     const rows = await qb
-      .select([
-        'u.id AS "userId"',
-        'u.first_name AS "firstName"',
-        'u.last_name AS "lastName"',
-        'u.email AS "email"',
-        'u.avatar_url AS "avatarUrl"',
-        'pool.track AS "roleTrack"',
-        'pool.verified_level AS "verifiedLevel"',
-      ])
-      .orderBy('pool.verified_at', 'DESC')
       .limit(Math.min(Math.max(limit, 1), 50))
       .getRawMany<Record<string, string | null>>();
+
+    // Names stay masked (first name + last initial) until the employer
+    // has unlocked that candidate.
+    const unlocked = await this.billingService.getUnlockedIds(
+      employerUserId,
+      rows.map((row) => row.userId as string),
+    );
 
     return {
       results: rows.map((row) => ({
         user_id: row.userId,
-        full_name: `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim(),
-        email: row.email,
-        avatar_url: row.avatarUrl,
+        full_name: unlocked.has(row.userId as string)
+          ? `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim()
+          : `${row.firstName ?? ''} ${(row.lastName ?? '').charAt(0).toUpperCase()}${row.lastName ? '.' : ''}`.trim(),
         role: row.verifiedLevel,
         role_track: row.roleTrack,
       })),
@@ -1143,7 +1263,6 @@ export class EmployerAssessmentsService {
         'saved.candidate_user_id AS "candidateUserId"',
         'u.first_name AS "firstName"',
         'u.last_name AS "lastName"',
-        'u.email AS "email"',
       ])
       .orderBy('saved.created_at', 'DESC')
       .offset((page - 1) * limit)
@@ -1152,14 +1271,12 @@ export class EmployerAssessmentsService {
         candidateUserId: string;
         firstName: string | null;
         lastName: string | null;
-        email: string;
       }>();
 
     return {
       candidates: rows.map((row) => ({
         candidateUserId: row.candidateUserId,
         fullName: `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim(),
-        email: row.email,
       })),
       total,
       page,
@@ -1173,7 +1290,7 @@ export class EmployerAssessmentsService {
   ): QuestionImportValidationResult {
     if (!file) {
       throw new BadRequestError(
-        "We couldn't read this file. Please use the CredLane template and try again.",
+        "We couldn't read this file. Please use the SkillSift template and try again.",
       );
     }
     if (file.size > EMPLOYER_ASSESSMENT_IMPORT_MAX_FILE_BYTES) {
@@ -1182,7 +1299,7 @@ export class EmployerAssessmentsService {
     const lowerName = file.originalname.toLowerCase();
     if (!lowerName.endsWith('.csv') && !lowerName.endsWith('.xlsx')) {
       throw new BadRequestError(
-        "We couldn't read this file. Please use the CredLane template and try again.",
+        "We couldn't read this file. Please use the SkillSift template and try again.",
       );
     }
     const rows = lowerName.endsWith('.xlsx')
@@ -1190,7 +1307,7 @@ export class EmployerAssessmentsService {
       : this.parseCsv(file.buffer.toString('utf8'));
     if (rows.length < 2) {
       throw new BadRequestError(
-        "We couldn't read this file. Please use the CredLane template and try again.",
+        "We couldn't read this file. Please use the SkillSift template and try again.",
       );
     }
 
@@ -1400,7 +1517,7 @@ export class EmployerAssessmentsService {
   private buildShareUrl(token: string): string {
     const baseUrl =
       process.env.FRONTEND_URL?.replace(/\/$/, '') ?? 'https://credlane.com';
-    return `${baseUrl}/assessments/${token}`;
+    return `${baseUrl}/assessment/${token}`;
   }
 
   private parseCsv(csv: string): string[][] {
@@ -1457,7 +1574,7 @@ export class EmployerAssessmentsService {
       return this.parseSheetRows(sheetXml, sharedStrings);
     } catch {
       throw new BadRequestError(
-        "We couldn't read this file. Please use the CredLane template and try again.",
+        "We couldn't read this file. Please use the SkillSift template and try again.",
       );
     }
   }

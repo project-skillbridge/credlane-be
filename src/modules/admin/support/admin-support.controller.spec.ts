@@ -1,9 +1,7 @@
 import { RequestMethod } from '@nestjs/common';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
-import {
-  ADMIN_TIERS_KEY,
-} from '../../../common/decorators/admin-tiers.decorator';
+import { ADMIN_TIERS_KEY } from '../../../common/decorators/admin-tiers.decorator';
 import { ROLES_KEY } from '../../../common/decorators/roles.decorator';
 import { AdminTier, UserRole } from '../../users/entities/user.entity';
 import { AdminSupportController } from './admin-support.controller';

@@ -111,5 +111,4 @@ export class OfferExpiryService implements OnModuleInit, OnModuleDestroy {
       }
     }
   }
-
 }

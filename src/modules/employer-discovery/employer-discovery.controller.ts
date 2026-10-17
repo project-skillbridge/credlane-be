@@ -57,6 +57,22 @@ export class EmployerDiscoveryController {
     );
   }
 
+  @Post('candidates/:userId/unlock')
+  @ApiOperation({
+    summary: 'Unlock a candidate profile',
+    description:
+      'Spends one unlock (plan quota first, then credits) to reveal full name, photo, resume, portfolio and contact. Unlocking twice never charges twice. Returns 402 when no unlocks are left.',
+  })
+  async unlockCandidate(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('userId', ParseUUIDPipe) candidateUserId: string,
+  ) {
+    return this.discoveryService.unlockCandidate(
+      employerUserId,
+      candidateUserId,
+    );
+  }
+
   @Post('candidates/:userId/save')
   @ApiOperation({ summary: 'Save a candidate to shortlist' })
   async saveCandidate(

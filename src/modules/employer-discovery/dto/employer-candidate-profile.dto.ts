@@ -21,4 +21,15 @@ export class EmployerCandidateProfileResponseDto extends VerifiedProfileResponse
     nullable: true,
   })
   offer_status: OfferStatus | null;
+
+  @ApiProperty({
+    description: 'True once the employer has unlocked this profile',
+  })
+  is_unlocked: boolean;
+
+  @ApiProperty({ nullable: true, description: 'Only when unlocked' })
+  portfolio_url: string | null;
+
+  @ApiProperty({ nullable: true, description: 'Only when unlocked' })
+  linkedin_url: string | null;
 }

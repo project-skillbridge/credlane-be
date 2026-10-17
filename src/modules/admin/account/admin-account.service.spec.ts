@@ -15,26 +15,29 @@ describe('AdminAccountService', () => {
     [AdminTier.SUPER_ADMIN, 'Super Admin'],
     [AdminTier.ADMIN, 'Admin'],
     [AdminTier.REVIEWER, 'Reviewer'],
-  ])('maps %s to the correct read-only account settings badge', async (tier, badge) => {
-    usersService.findOne.mockResolvedValue({
-      id: 'admin-1',
-      fullname: 'Ava Admin',
-      email: 'ava@example.com',
-      role: UserRole.ADMIN,
-      admin_tier: tier,
-    });
+  ])(
+    'maps %s to the correct read-only account settings badge',
+    async (tier, badge) => {
+      usersService.findOne.mockResolvedValue({
+        id: 'admin-1',
+        fullname: 'Ava Admin',
+        email: 'ava@example.com',
+        role: UserRole.ADMIN,
+        admin_tier: tier,
+      });
 
-    const result = await service.getMe('admin-1');
+      const result = await service.getMe('admin-1');
 
-    expect(result).toEqual({
-      id: 'admin-1',
-      name: 'Ava Admin',
-      email: 'ava@example.com',
-      role: UserRole.ADMIN,
-      admin_tier: tier,
-      role_badge: badge,
-    });
-  });
+      expect(result).toEqual({
+        id: 'admin-1',
+        name: 'Ava Admin',
+        email: 'ava@example.com',
+        role: UserRole.ADMIN,
+        admin_tier: tier,
+        role_badge: badge,
+      });
+    },
+  );
 
   it('rejects malformed non-admin account data defensively', async () => {
     usersService.findOne.mockResolvedValue({
@@ -43,8 +46,6 @@ describe('AdminAccountService', () => {
       admin_tier: null,
     });
 
-    await expect(service.getMe('talent-1')).rejects.toThrow(
-      ForbiddenException,
-    );
+    await expect(service.getMe('talent-1')).rejects.toThrow(ForbiddenException);
   });
 });
