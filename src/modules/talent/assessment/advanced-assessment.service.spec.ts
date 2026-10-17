@@ -1100,6 +1100,32 @@ describe('AdvancedAssessmentService', () => {
       );
     });
 
+    it('restores a retake requirement that existed before the submit', async () => {
+      attemptData.current.completed_at = null;
+      attemptData.current.generated_questions_json = {
+        context: {
+          submit_enqueued_at: '2026-10-01T00:00:00.000Z',
+          pre_submit_lock: {
+            locked_from: '2026-09-01T00:00:00.000Z',
+            locked_until: '2026-09-15T00:00:00.000Z',
+            retake_required: true,
+          },
+        },
+        questions: [],
+      };
+
+      await service.releaseFailedSubmit(userId, 'attempt-1');
+
+      expect(talentProfileRepo.update).toHaveBeenCalledWith(
+        { id: profileStore.id },
+        {
+          assessment_locked_from: new Date('2026-09-01T00:00:00.000Z'),
+          assessment_locked_until: new Date('2026-09-15T00:00:00.000Z'),
+          advanced_retake_required: true,
+        },
+      );
+    });
+
     it('leaves the lock alone once the attempt has been scored', async () => {
       attemptData.current.completed_at = new Date();
 

@@ -141,8 +141,16 @@ type AdvancedAssessmentSessionPayload = {
   context?: {
     verified_level?: unknown;
     submit_enqueued_at?: string;
+    pre_submit_lock?: PreSubmitLockState;
   };
   questions?: unknown;
+};
+
+/** Retake-gate columns as they were before a submit set the 14-day lock. */
+type PreSubmitLockState = {
+  locked_from: string | null;
+  locked_until: string | null;
+  retake_required: boolean;
 };
 
 type AdvancedQuestionBank = {
@@ -494,9 +502,19 @@ export class AdvancedAssessmentService {
         throw this.buildAdvancedSubmitProcessingConflict(otherInFlight.id);
       }
 
+      const currentProfile = await manager.findOne(TalentProfile, {
+        where: { id: profile.id },
+      });
       lockedAttempt.generated_questions_json = this.withSubmitEnqueuedAt(
         lockedAttempt,
         new Date().toISOString(),
+        {
+          locked_from:
+            currentProfile?.assessment_locked_from?.toISOString() ?? null,
+          locked_until:
+            currentProfile?.assessment_locked_until?.toISOString() ?? null,
+          retake_required: currentProfile?.advanced_retake_required ?? false,
+        },
       );
       await manager.save(AssessmentAttempt, lockedAttempt);
 
@@ -525,15 +543,7 @@ export class AdvancedAssessmentService {
         })),
       });
     } catch {
-      await this.clearSubmitEnqueuedAt(dto.sessionId);
-      await this.talentProfileRepo.update(
-        { id: profile.id },
-        {
-          assessment_locked_from: null,
-          assessment_locked_until: null,
-          advanced_retake_required: false,
-        },
-      );
+      await this.restorePreSubmitLock(profile.id, dto.sessionId);
       throw new ServiceUnavailableException({
         error: 'SUBMIT_QUEUE_UNAVAILABLE',
         message: ErrorMessages.ADVANCED_ASSESSMENT.SUBMIT_QUEUE_UNAVAILABLE,
@@ -573,15 +583,7 @@ export class AdvancedAssessmentService {
     });
     if (!attempt || attempt.completed_at) return;
 
-    await this.clearSubmitEnqueuedAt(sessionId);
-    await this.talentProfileRepo.update(
-      { id: profile.id },
-      {
-        assessment_locked_from: null,
-        assessment_locked_until: null,
-        advanced_retake_required: false,
-      },
-    );
+    await this.restorePreSubmitLock(profile.id, sessionId);
     this.logger.error(
       `Advanced scoring failed permanently; released retake lock: attempt=${sessionId} user=${userId}`,
     );
@@ -1405,6 +1407,7 @@ export class AdvancedAssessmentService {
   private withSubmitEnqueuedAt(
     attempt: AssessmentAttempt,
     enqueuedAt: string,
+    preSubmitLock: PreSubmitLockState,
   ): Record<string, any> {
     const payload = this.readSessionPayload(attempt);
     return {
@@ -1412,31 +1415,53 @@ export class AdvancedAssessmentService {
       context: {
         ...(payload.context ?? {}),
         submit_enqueued_at: enqueuedAt,
+        pre_submit_lock: preSubmitLock,
       },
       questions: payload.questions,
     };
   }
 
-  private async clearSubmitEnqueuedAt(sessionId: string): Promise<void> {
+  /**
+   * Undo a submit that never produced a result: clear the in-flight marker and
+   * put the retake gate back exactly as it was before submit, so a talent who
+   * was already required to retake keeps that requirement.
+   */
+  private async restorePreSubmitLock(
+    profileId: string,
+    sessionId: string,
+  ): Promise<void> {
     const attempt = await this.attemptRepo.findOne({
       where: { id: sessionId },
     });
-    if (!attempt?.generated_questions_json) {
-      return;
+    const payload = attempt?.generated_questions_json
+      ? this.readSessionPayload(attempt)
+      : null;
+    const previous = payload?.context?.pre_submit_lock;
+
+    if (attempt && payload) {
+      const context = { ...(payload.context ?? {}) };
+      delete context.submit_enqueued_at;
+      delete context.pre_submit_lock;
+      attempt.generated_questions_json = {
+        ...payload,
+        context,
+        questions: payload.questions,
+      } as Record<string, any>;
+      await this.attemptRepo.save(attempt);
     }
 
-    const payload = this.readSessionPayload(attempt);
-    const context = { ...(payload.context ?? {}) };
-    delete context.submit_enqueued_at;
-
-    const clearedPayload = {
-      ...payload,
-      context,
-      questions: payload.questions,
-    };
-
-    attempt.generated_questions_json = clearedPayload as Record<string, any>;
-    await this.attemptRepo.save(attempt);
+    await this.talentProfileRepo.update(
+      { id: profileId },
+      {
+        assessment_locked_from: previous?.locked_from
+          ? new Date(previous.locked_from)
+          : null,
+        assessment_locked_until: previous?.locked_until
+          ? new Date(previous.locked_until)
+          : null,
+        advanced_retake_required: previous?.retake_required ?? false,
+      },
+    );
   }
 
   private assertAdvancedRetakeUnlocked(profile: TalentProfile): void {
