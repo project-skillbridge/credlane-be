@@ -17,3 +17,5 @@ export {
 export type { IntegrityConfidenceLevel } from './assessment-score.entity';
 export { TalentQuestionHistory } from './talent-question-history.entity';
 export { QuestionQualityNote } from './question-quality-note.entity';
+export { AssessmentWaitlist } from './assessment-waitlist.entity';
+export { TalentCertificate } from './talent-certificate.entity';

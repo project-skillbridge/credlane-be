@@ -43,7 +43,12 @@ describe('SkillAssessmentService', () => {
   let questionRepo: Record<string, jest.Mock>;
 
   let guidanceReportQueue: Pick<SkillGuidanceReportQueueService, 'enqueue'>;
+  let notificationDispatch: {
+    notifySkillAssessmentPassed: jest.Mock;
+    notifySkillAssessmentFailed: jest.Mock;
+  };
   let bankExhaustedAlert: { notify: jest.Mock };
+  let waitlist: { join: jest.Mock; isWaitlisted: jest.Mock };
   let eligibleSkillQuestions: AssessmentQuestion[];
   let warmCacheMock: jest.Mock;
 
@@ -55,16 +60,17 @@ describe('SkillAssessmentService', () => {
     advanced_assessment_completed_at: null,
   });
 
+  const insertBuilder = {
+    into: jest.fn().mockReturnThis(),
+    values: jest.fn().mockReturnThis(),
+    orUpdate: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue(undefined),
+  };
+
   function mockTransaction(probeQuestions: AssessmentQuestion[] = []) {
     let eligibleQueryCount = 0;
     talentProfileRepo.manager.transaction.mockImplementation(
       async (work: (manager: EntityManagerLike) => Promise<unknown>) => {
-        const insertBuilder = {
-          into: jest.fn().mockReturnThis(),
-          values: jest.fn().mockReturnThis(),
-          orUpdate: jest.fn().mockReturnThis(),
-          execute: jest.fn().mockResolvedValue(undefined),
-        };
         const manager: EntityManagerLike = {
           findOne: jest.fn().mockResolvedValue(profile),
           getRepository: jest.fn(() => attemptRepo),
@@ -142,10 +148,18 @@ describe('SkillAssessmentService', () => {
     mockTransaction(makeProbeQuestions());
 
     bankExhaustedAlert = { notify: jest.fn() };
+    waitlist = {
+      join: jest.fn().mockResolvedValue(undefined),
+      isWaitlisted: jest.fn().mockResolvedValue(false),
+    };
 
     warmCacheMock = jest.fn().mockResolvedValue(undefined);
 
     guidanceReportQueue = { enqueue: jest.fn() };
+    notificationDispatch = {
+      notifySkillAssessmentPassed: jest.fn().mockResolvedValue(undefined),
+      notifySkillAssessmentFailed: jest.fn().mockResolvedValue(undefined),
+    };
 
     service = new SkillAssessmentService(
       talentProfileRepo as never,
@@ -158,6 +172,11 @@ describe('SkillAssessmentService', () => {
       bankExhaustedAlert as never,
       { warmCache: warmCacheMock } as never,
       guidanceReportQueue as never,
+      waitlist as never,
+      {
+        issueForSkillPass: jest.fn().mockResolvedValue({ code: 'CERT123' }),
+      } as never,
+      notificationDispatch as never,
     );
   });
 
@@ -268,7 +287,7 @@ describe('SkillAssessmentService', () => {
         }),
       }),
     );
-    expect(attemptRepo.save).toHaveBeenCalledWith(
+    expect(insertBuilder.values).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({
           question_id: 'skill-mcq-1',
@@ -276,6 +295,153 @@ describe('SkillAssessmentService', () => {
         }),
       ]),
     );
+  });
+
+  it('gives a new skill session a 30-minute server-side deadline', async () => {
+    const before = Date.now();
+    const result = await service.start(userId);
+
+    const expiresAt = new Date(result.expires_at as string).getTime();
+    expect(expiresAt - before).toBeGreaterThanOrEqual(30 * 60 * 1000 - 1000);
+    expect(expiresAt - before).toBeLessThanOrEqual(30 * 60 * 1000 + 5000);
+    expect(result.remaining_seconds).toBeGreaterThan(29 * 60);
+    expect(attemptRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ expires_at: expect.any(Date) }),
+    );
+  });
+
+  describe('time limit', () => {
+    const timedAttempt = (expiresAt: Date | null) =>
+      Object.assign(new AssessmentAttempt(), {
+        id: 'attempt-1',
+        talent_profile_id: profile.id,
+        assessment_type: AssessmentType.SKILL,
+        started_at: new Date(Date.now() - 31 * 60 * 1000),
+        completed_at: null,
+        expires_at: expiresAt,
+        generated_questions_json: {
+          context: { verified_level: VerifiedLevel.MID },
+          questions: [
+            {
+              question_id: 'question-1',
+              question_number: 1,
+              question_type: QuestionType.SINGLE_PICK,
+              question_text: 'Which metric best indicates activation?',
+              options: ['Signups', 'First key action', 'Page views'],
+              correct_answer: 'First key action',
+            },
+          ],
+        },
+      });
+
+    const answers = [{ questionId: 'question-1', answer: 'First key action' }];
+
+    it('reports the remaining seconds when a timed session is resumed', async () => {
+      attemptRepo.findOne.mockResolvedValue(
+        timedAttempt(new Date(Date.now() + 10 * 60 * 1000)),
+      );
+
+      const result = await service.getSession(userId, 'attempt-1');
+
+      expect(result.remaining_seconds).toBeGreaterThan(9 * 60);
+      expect(result.remaining_seconds).toBeLessThanOrEqual(10 * 60);
+    });
+
+    it('accepts a submit that lands inside the grace window', async () => {
+      attemptRepo.findOne.mockResolvedValue(
+        timedAttempt(new Date(Date.now() - 30 * 1000)),
+      );
+      questionRepo.findBy.mockResolvedValue([
+        Object.assign(new AssessmentQuestion(), {
+          id: 'question-1',
+          competency: 'activation',
+          metadata: {},
+        }),
+      ]);
+
+      const result = await service.submit(userId, {
+        attemptId: 'attempt-1',
+        answers,
+      });
+
+      expect(result.session_id).toBe('attempt-1');
+    });
+
+    it('rejects a submit after the deadline and uses up the attempt', async () => {
+      attemptRepo.findOne.mockResolvedValue(
+        timedAttempt(new Date(Date.now() - 10 * 60 * 1000)),
+      );
+
+      await expect(
+        service.submit(userId, { attemptId: 'attempt-1', answers }),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({ error: 'SKILL_TIME_EXPIRED' }),
+      });
+      expect(attemptRepo.update).toHaveBeenCalledWith('attempt-1', {
+        completed_at: expect.any(Date),
+        force_submitted: true,
+      });
+    });
+
+    it('treats a session with no deadline (started before the limit) as untimed', async () => {
+      attemptRepo.findOne.mockResolvedValue(timedAttempt(null));
+      questionRepo.findBy.mockResolvedValue([
+        Object.assign(new AssessmentQuestion(), {
+          id: 'question-1',
+          competency: 'activation',
+          metadata: {},
+        }),
+      ]);
+
+      await expect(
+        service.submit(userId, { attemptId: 'attempt-1', answers }),
+      ).resolves.toMatchObject({ session_id: 'attempt-1' });
+    });
+  });
+
+  it('breaks the score down by competency, weakest first', async () => {
+    const q = (id: string) => ({
+      question_id: id,
+      question_number: 1,
+      question_type: QuestionType.SINGLE_PICK,
+      question_text: `Question ${id}`,
+      options: ['right', 'wrong'],
+      correct_answer: 'right',
+    });
+    attemptRepo.findOne.mockResolvedValue(
+      Object.assign(new AssessmentAttempt(), {
+        id: 'attempt-1',
+        talent_profile_id: profile.id,
+        assessment_type: AssessmentType.SKILL,
+        started_at: new Date('2026-05-21T10:00:00.000Z'),
+        completed_at: null,
+        generated_questions_json: {
+          context: { verified_level: VerifiedLevel.MID },
+          questions: [q('q1'), q('q2'), q('q3')],
+        },
+      }),
+    );
+    const entity = (id: string, competency: string | null) =>
+      Object.assign(new AssessmentQuestion(), { id, competency, metadata: {} });
+    questionRepo.findBy.mockResolvedValue([
+      entity('q1', 'css-layout'),
+      entity('q2', 'css-layout'),
+      entity('q3', 'async-programming'),
+    ]);
+
+    const result = await service.submit(userId, {
+      attemptId: 'attempt-1',
+      answers: [
+        { questionId: 'q1', answer: 'right' },
+        { questionId: 'q2', answer: 'wrong' },
+        { questionId: 'q3', answer: 'wrong' },
+      ],
+    });
+
+    expect(result.competency_breakdown).toEqual([
+      { competency: 'async-programming', correct: 0, total: 1, percentage: 0 },
+      { competency: 'css-layout', correct: 1, total: 2, percentage: 50 },
+    ]);
   });
 
   it('returns attempt_number 3 when two skill attempts are already completed', async () => {
@@ -334,7 +500,7 @@ describe('SkillAssessmentService', () => {
     expect(attemptRepo.save).not.toHaveBeenCalled();
   });
 
-  it('retries without exclusion when bank is exhausted after excluding history', async () => {
+  it('fails with BANK_EXHAUSTED instead of repeating served questions', async () => {
     attemptRepo.count.mockResolvedValue(1);
     attemptRepo.findOne.mockResolvedValue(null); // no active session
 
@@ -350,17 +516,13 @@ describe('SkillAssessmentService', () => {
             orderBy: jest.fn().mockReturnThis(),
             getMany: jest.fn().mockImplementation(() => {
               eligibleQueryCount += 1;
-              // 1st call: excluded bank returns insufficient questions
+              // Fresh (unserved) bank is too small to build a full session.
               if (eligibleQueryCount === 1) {
                 return makeSkillBankQuestions().slice(0, 5);
               }
-              // 2nd call (retry without exclusion): returns full bank
-              if (eligibleQueryCount === 2) {
-                return makeSkillBankQuestions();
-              }
-              // probe queries
               return makeProbeQuestions();
             }),
+            insert: jest.fn(() => insertBuilder),
           })),
           create: jest.fn((_entity: unknown, data: unknown) =>
             attemptRepo.create(data),
@@ -374,10 +536,63 @@ describe('SkillAssessmentService', () => {
       },
     );
 
-    const result = await service.start(userId);
+    const failure = service.start(userId);
+    await expect(failure).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(failure).rejects.toMatchObject({
+      response: { error: 'ASSESSMENT_PREPARING', waitlisted: true },
+    });
+    // The client never sees the word "bank" or any counts.
+    await failure.catch((err: ServiceUnavailableException) => {
+      expect(JSON.stringify(err.getResponse())).not.toMatch(/bank|exhaust/i);
+    });
+    // The talent is waitlisted and the team is alerted.
+    expect(waitlist.join).toHaveBeenCalledWith(
+      expect.objectContaining({ id: profile.id }),
+      'skill',
+      'mid',
+    );
+    expect(bankExhaustedAlert.notify).toHaveBeenCalled();
+    // The history exclusion is never lifted, so no query ran without it.
+    expect(eligibleQueryCount).toBe(1);
+  });
 
-    expect(result.session_id).toBe('attempt-1');
-    expect(result.attempt_number).toBe(2);
+  describe('getAvailability', () => {
+    it('reports can_start when a fresh session can be built', async () => {
+      jest
+        .spyOn(service as never, 'planFreshSession' as never)
+        .mockResolvedValue({} as never);
+
+      await expect(service.getAvailability(userId)).resolves.toEqual({
+        can_start: true,
+        waitlisted: false,
+      });
+    });
+
+    it('reports can_start false, and the waitlist state, when questions are still being prepared', async () => {
+      jest
+        .spyOn(service as never, 'hasFreshCapacity' as never)
+        .mockResolvedValue(false as never);
+      waitlist.isWaitlisted.mockResolvedValue(true);
+
+      await expect(service.getAvailability(userId)).resolves.toEqual({
+        can_start: false,
+        waitlisted: true,
+      });
+    });
+
+    it('lets a talent with an open session through so they can resume', async () => {
+      attemptRepo.findOne.mockResolvedValue({ id: 'active' });
+      const capacity = jest.spyOn(
+        service as never,
+        'hasFreshCapacity' as never,
+      );
+
+      await expect(service.getAvailability(userId)).resolves.toEqual({
+        can_start: true,
+        waitlisted: false,
+      });
+      expect(capacity).not.toHaveBeenCalled();
+    });
   });
 
   it('excludes all previously served questions from full history', async () => {
@@ -396,6 +611,7 @@ describe('SkillAssessmentService', () => {
             andWhere: andWhereMock,
             orderBy: jest.fn().mockReturnThis(),
             getMany: jest.fn().mockResolvedValue(eligibleSkillQuestions),
+            insert: jest.fn(() => insertBuilder),
           })),
           create: jest.fn((_entity: unknown, data: unknown) =>
             attemptRepo.create(data),
@@ -471,6 +687,8 @@ describe('SkillAssessmentService', () => {
       attempt_number: 1,
       started_at: '2026-05-21T10:00:00.000Z',
       verified_level: VerifiedLevel.MID,
+      expires_at: null,
+      remaining_seconds: null,
       questions: [
         {
           question_id: 'question-1',
@@ -773,6 +991,15 @@ describe('SkillAssessmentService', () => {
     expect(result.percentage).toBeLessThan(50);
     expect(result.validated_level).toBeNull();
     expect(result.passed).toBe(false);
+    expect(
+      notificationDispatch.notifySkillAssessmentFailed,
+    ).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({ percentage: result.percentage }),
+    );
+    expect(
+      notificationDispatch.notifySkillAssessmentPassed,
+    ).not.toHaveBeenCalled();
     expect(updateMock).toHaveBeenCalledWith(
       TalentProfile,
       { id: profile.id },
@@ -848,6 +1075,18 @@ describe('SkillAssessmentService', () => {
     expect(result.percentage).toBe(100);
     expect(result.passed).toBe(true);
     expect(result.failed).toBe(false);
+    expect(
+      notificationDispatch.notifySkillAssessmentPassed,
+    ).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        certificateCode: 'CERT123',
+        percentage: 100,
+      }),
+    );
+    expect(
+      notificationDispatch.notifySkillAssessmentFailed,
+    ).not.toHaveBeenCalled();
     expect(warmCacheMock).toHaveBeenCalledWith(
       profile.track,
       expect.any(String),
@@ -920,7 +1159,43 @@ describe('SkillAssessmentService', () => {
   });
 
   describe('flag()', () => {
-    it('voids an active skill session and returns logout action', async () => {
+    it('records a violation without voiding while under the limit', async () => {
+      const attempt = Object.assign(new AssessmentAttempt(), {
+        id: 'attempt-1',
+        talent_profile_id: profile.id,
+        assessment_type: AssessmentType.SKILL,
+        completed_at: null,
+        force_submitted: false,
+        tab_switch_count: 0,
+        copy_paste_count: 0,
+      });
+      const update = jest.fn().mockResolvedValue(undefined);
+      talentProfileRepo.manager.transaction.mockImplementation(
+        async (
+          work: (manager: Record<string, jest.Mock>) => Promise<unknown>,
+        ) =>
+          work({
+            findOne: jest
+              .fn()
+              .mockResolvedValueOnce(attempt)
+              .mockResolvedValueOnce({ ...attempt, tab_switch_count: 2 }),
+            increment: jest.fn().mockResolvedValue(undefined),
+            update,
+          }),
+      );
+
+      const result = await service.flag(userId, 'attempt-1', {
+        eventType: IntegrityEventType.TAB_SWITCH,
+      });
+
+      expect(result.status).toBe('recorded');
+      expect(result.action).toBe('warn');
+      expect(result.sessionVoided).toBe(false);
+      expect(result.tabSwitchCount).toBe(2);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('voids an active skill session on the third violation', async () => {
       const attempt = Object.assign(new AssessmentAttempt(), {
         id: 'attempt-1',
         talent_profile_id: profile.id,
@@ -941,7 +1216,7 @@ describe('SkillAssessmentService', () => {
               .mockResolvedValueOnce(attempt)
               .mockResolvedValueOnce({
                 ...attempt,
-                tab_switch_count: 1,
+                tab_switch_count: 3,
                 copy_paste_count: 0,
               }),
             increment: jest.fn().mockResolvedValue(undefined),
@@ -956,7 +1231,7 @@ describe('SkillAssessmentService', () => {
       expect(result.status).toBe('voided');
       expect(result.action).toBe('logout');
       expect(result.sessionVoided).toBe(true);
-      expect(result.tabSwitchCount).toBe(1);
+      expect(result.tabSwitchCount).toBe(3);
     });
 
     it('throws 400 when flagging a completed skill session', async () => {

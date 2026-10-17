@@ -90,6 +90,19 @@ export const SKILL_ASSESSMENT_MAX_ATTEMPTS = 3;
 /** How long (ms) before an incomplete skill session is considered abandoned. */
 export const SKILL_ASSESSMENT_SESSION_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
 
+/**
+ * Integrity violations (tab switches, screenshots, copy/paste) tolerated in
+ * one session. The server counts them, so the limit cannot be bypassed by
+ * tampering with the client. The session is voided on reaching this count.
+ */
+export const INTEGRITY_VIOLATION_LIMIT = 3;
+
+/** Time allowed for one skill assessment attempt. */
+export const SKILL_ASSESSMENT_DURATION_MINUTES = 30;
+
+/** Slack after the deadline for the client's auto-submit to reach the server. */
+export const SKILL_ASSESSMENT_SUBMIT_GRACE_SECONDS = 120;
+
 /** Minimum claimed-level score (Stage 2) required to confirm the candidate's claimed level. */
 export const SKILL_ASSESSMENT_PASS_PERCENTAGE = 50;
 
