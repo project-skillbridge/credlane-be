@@ -71,6 +71,29 @@ import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-asses
 import { CredlaneCatalogueQuestion } from './entities/credlane-catalogue-question.entity';
 import { EmployerAssessmentAttempt } from './entities/employer-assessment-attempt.entity';
 
+export type EmployerAssessmentsOverview = {
+  last30Days: {
+    assessed: number;
+    passRate: number | null;
+    averageScore: number | null;
+    /** Results whose integrity level is "review" or "flagged". */
+    needsReview: number;
+  };
+  activeAssessments: number;
+  recent: Array<{
+    id: string;
+    assessmentId: string;
+    assessmentTitle: string;
+    source: 'talent' | 'external';
+    candidateName: string | null;
+    email: string | null;
+    score: number;
+    passed: boolean;
+    integrityLevel: IntegrityLevel | null;
+    completedAt: Date;
+  }>;
+};
+
 export type AssessmentResultRow = {
   id: string;
   source: 'talent' | 'external';
@@ -434,6 +457,102 @@ export class EmployerAssessmentsService {
       if (r.last) bump(e, r.last);
     }
     return out;
+  }
+
+  /** Headline numbers and the latest completions across all of an employer's assessments. */
+  async getEmployerOverview(
+    employerUserId: string,
+  ): Promise<EmployerAssessmentsOverview> {
+    await this.ensureVerifiedEmployer(employerUserId);
+    const assessments = await this.assessmentRepo.find({
+      where: { employer_user_id: employerUserId },
+      select: ['id', 'title', 'is_active'],
+    });
+    const empty: EmployerAssessmentsOverview = {
+      last30Days: {
+        assessed: 0,
+        passRate: null,
+        averageScore: null,
+        needsReview: 0,
+      },
+      activeAssessments: assessments.filter((a) => a.is_active).length,
+      recent: [],
+    };
+    if (assessments.length === 0) return empty;
+
+    const ids = assessments.map((a) => a.id);
+    const titleById = new Map(assessments.map((a) => [a.id, a.title]));
+    const [internal, external] = await Promise.all([
+      this.submissionRepo.find({
+        where: { assessment_id: In(ids) },
+        relations: ['candidate'],
+        order: { completed_at: 'DESC' },
+        take: 300,
+      }),
+      this.externalSubmissionRepo.find({
+        where: { assessment_id: In(ids) },
+        relations: ['external_applicant'],
+        order: { submitted_at: 'DESC' },
+        take: 300,
+      }),
+    ]);
+
+    const rows: EmployerAssessmentsOverview['recent'] = [
+      ...internal.map((submission) => ({
+        id: submission.id,
+        assessmentId: submission.assessment_id,
+        assessmentTitle: titleById.get(submission.assessment_id) ?? '',
+        source: 'talent' as const,
+        candidateName:
+          `${submission.candidate?.first_name ?? ''} ${
+            submission.candidate?.last_name ?? ''
+          }`.trim() || null,
+        email: null,
+        score: submission.score,
+        passed: submission.passed,
+        integrityLevel: submission.integrity_level ?? null,
+        completedAt: submission.completed_at,
+      })),
+      ...external.map((submission) => ({
+        id: submission.id,
+        assessmentId: submission.assessment_id,
+        assessmentTitle: titleById.get(submission.assessment_id) ?? '',
+        source: 'external' as const,
+        candidateName: null,
+        email: submission.external_applicant?.email ?? null,
+        score: submission.score,
+        passed: submission.passed,
+        integrityLevel: submission.integrity_level ?? null,
+        completedAt: submission.submitted_at,
+      })),
+    ].sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
+
+    const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const recentWindow = rows.filter(
+      (row) => row.completedAt.getTime() >= since,
+    );
+    const scores = recentWindow.map((row) => row.score);
+    return {
+      last30Days: {
+        assessed: recentWindow.length,
+        passRate: recentWindow.length
+          ? Math.round(
+              (recentWindow.filter((row) => row.passed).length /
+                recentWindow.length) *
+                100,
+            )
+          : null,
+        averageScore: scores.length
+          ? Math.round(scores.reduce((sum, n) => sum + n, 0) / scores.length)
+          : null,
+        needsReview: recentWindow.filter(
+          (row) =>
+            row.integrityLevel === 'review' || row.integrityLevel === 'flagged',
+        ).length,
+      },
+      activeAssessments: empty.activeAssessments,
+      recent: rows.slice(0, 6),
+    };
   }
 
   async listAssessments(employerUserId: string): Promise<{

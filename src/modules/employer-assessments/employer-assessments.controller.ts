@@ -97,6 +97,12 @@ export class EmployerAssessmentsController {
     return this.employerAssessmentsService.listAssessments(employerUserId);
   }
 
+  @Get('employer/assessments/overview')
+  @Roles(UserRole.EMPLOYER)
+  getOverview(@CurrentUser('sub') employerUserId: string) {
+    return this.employerAssessmentsService.getEmployerOverview(employerUserId);
+  }
+
   @Get('employer/assessments/candidates')
   @Roles(UserRole.EMPLOYER)
   @ApiSearchAssessmentCandidates()

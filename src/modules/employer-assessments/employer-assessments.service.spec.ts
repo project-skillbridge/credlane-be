@@ -969,6 +969,79 @@ describe('EmployerAssessmentsService', () => {
 
   // ─── listResults ───────────────────────────────────────────────────────────
 
+  describe('getEmployerOverview', () => {
+    const verified = () =>
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+    const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
+
+    it('returns zeros when the employer has no assessments', async () => {
+      verified();
+      mockAssessmentRepo.find.mockResolvedValue([]);
+
+      const result = await service.getEmployerOverview('emp-1');
+
+      expect(result.last30Days.assessed).toBe(0);
+      expect(result.recent).toEqual([]);
+    });
+
+    it('summarises the last 30 days and lists the latest completions', async () => {
+      verified();
+      mockAssessmentRepo.find.mockResolvedValue([
+        { id: 'a-1', title: 'Frontend', is_active: true },
+        { id: 'a-2', title: 'Backend', is_active: false },
+      ]);
+      mockSubmissionRepo.find.mockResolvedValue([
+        {
+          id: 's-1',
+          assessment_id: 'a-1',
+          candidate: { first_name: 'Ada', last_name: 'Obi' },
+          score: 90,
+          passed: true,
+          integrity_level: 'clean',
+          completed_at: daysAgo(1),
+        },
+        {
+          id: 's-old',
+          assessment_id: 'a-1',
+          candidate: null,
+          score: 10,
+          passed: false,
+          integrity_level: null,
+          completed_at: daysAgo(60),
+        },
+      ]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([
+        {
+          id: 'e-1',
+          assessment_id: 'a-2',
+          external_applicant: { email: 'x@y.co' },
+          score: 40,
+          passed: false,
+          integrity_level: 'flagged',
+          submitted_at: daysAgo(2),
+        },
+      ]);
+
+      const result = await service.getEmployerOverview('emp-1');
+
+      expect(result.activeAssessments).toBe(1);
+      expect(result.last30Days).toEqual({
+        assessed: 2,
+        passRate: 50,
+        averageScore: 65,
+        needsReview: 1,
+      });
+      expect(result.recent.map((r) => r.id)).toEqual(['s-1', 'e-1', 's-old']);
+      expect(result.recent[1]).toMatchObject({
+        assessmentTitle: 'Backend',
+        email: 'x@y.co',
+      });
+    });
+  });
+
   describe('listResults', () => {
     const verifiedEmployer = () => {
       mockUserRepo.findOne.mockResolvedValue({
