@@ -2,13 +2,20 @@ import { randomBytes } from 'crypto';
 import { inflateRawSync } from 'zlib';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { createHash } from 'crypto';
 import {
   DataSource,
   EntityManager,
   In,
+  Not,
   QueryFailedError,
   Repository,
 } from 'typeorm';
+import {
+  evaluateIntegrity,
+  type IntegrityEvents,
+  type IntegrityLevel,
+} from './assessment-integrity';
 import {
   BadRequestError,
   ConflictError,
@@ -61,6 +68,7 @@ import {
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
 import { CredlaneCatalogueQuestion } from './entities/credlane-catalogue-question.entity';
+import { EmployerAssessmentAttempt } from './entities/employer-assessment-attempt.entity';
 
 export type AssessmentResultRow = {
   id: string;
@@ -73,6 +81,9 @@ export type AssessmentResultRow = {
   timeTakenSeconds: number | null;
   dateCompleted: Date;
   deliveryMode: string | null;
+  /** Clean, needs review or flagged; null when nothing was recorded. */
+  integrityLevel: IntegrityLevel | null;
+  integrityReasons: string[];
   /** 1-based rank by score across every submission; ties share a rank. */
   rank: number;
   /** Share of the other candidates this one outscored; null under 3 submissions. */
@@ -111,6 +122,8 @@ export type AssessmentResultDetail = AssessmentResultRow & {
   }>;
   correctCount: number;
   questionCount: number;
+  /** Raw browser signals behind the integrity level, for the report. */
+  integrityEvents: IntegrityEvents | null;
 };
 
 const ACTIVE_ASSESSMENT_LIMIT = 5;
@@ -163,6 +176,8 @@ export class EmployerAssessmentsService {
     private readonly inviteRepo: Repository<EmployerAssessmentInvite>,
     @InjectRepository(EmployerAssessmentSubmission)
     private readonly submissionRepo: Repository<EmployerAssessmentSubmission>,
+    @InjectRepository(EmployerAssessmentAttempt)
+    private readonly attemptRepo: Repository<EmployerAssessmentAttempt>,
     @InjectRepository(CredlaneCatalogueQuestion)
     private readonly catalogueQuestionRepo: Repository<CredlaneCatalogueQuestion>,
     @InjectRepository(EmployerSavedCandidate)
@@ -883,9 +898,14 @@ export class EmployerAssessmentsService {
         'This assessment is no longer accepting submissions.',
       );
     }
+    const profile = await this.employerProfileRepo.findOne({
+      where: { user_id: assessment.employer_user_id },
+    });
     return {
       id: assessment.id,
       title: assessment.title,
+      type: assessment.type,
+      employer_name: profile?.company_name ?? null,
       role_track: assessment.role_track,
       experience_level: assessment.experience_level,
       time_limit_minutes: assessment.time_limit_minutes,
@@ -959,10 +979,14 @@ export class EmployerAssessmentsService {
   async registerExternalApplicant(
     token: string,
     dto: RegisterExternalAssessmentDto,
+    ip?: string,
   ): Promise<{
     external_applicant_id: string;
     email: string;
     session_token: string;
+    time_limit_minutes: number;
+    remaining_seconds: number;
+    submitted: boolean;
   }> {
     const assessment = await this.assessmentRepo.findOne({
       where: { share_token: token, type: EmployerAssessmentType.EXTERNAL },
@@ -981,10 +1005,19 @@ export class EmployerAssessmentsService {
       where: { assessment_id: assessment.id, email },
     });
     if (existing) {
+      const done = await this.externalSubmissionRepo.count({
+        where: { external_applicant_id: existing.id },
+      });
       return {
         external_applicant_id: existing.id,
         email: existing.email,
         session_token: existing.session_token,
+        time_limit_minutes: assessment.time_limit_minutes,
+        remaining_seconds: this.remainingSeconds(
+          existing.created_at,
+          assessment.time_limit_minutes,
+        ),
+        submitted: done > 0,
       };
     }
 
@@ -995,13 +1028,30 @@ export class EmployerAssessmentsService {
       consented_at: new Date(),
       session_token: randomBytes(36).toString('hex'),
       session_expires_at: new Date(Date.now() + EXTERNAL_SESSION_TTL_MS),
+      ip_hash: ip ? this.hashIp(assessment.id, ip) : null,
     } as Partial<EmployerAssessmentExternalApplicant>);
 
     return {
       external_applicant_id: applicant.id,
       email: applicant.email,
       session_token: applicant.session_token,
+      time_limit_minutes: assessment.time_limit_minutes,
+      remaining_seconds: assessment.time_limit_minutes * 60,
+      submitted: false,
     };
+  }
+
+  /** One-way hash so we can spot shared networks without storing IPs. */
+  private hashIp(assessmentId: string, ip: string): string {
+    return createHash('sha256').update(`${assessmentId}:${ip}`).digest('hex');
+  }
+
+  private elapsedSeconds(startedAt: Date): number {
+    return Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 1000));
+  }
+
+  private remainingSeconds(startedAt: Date, limitMinutes: number): number {
+    return Math.max(0, limitMinutes * 60 - this.elapsedSeconds(startedAt));
   }
 
   async submitExternalAssessment(
@@ -1050,12 +1100,33 @@ export class EmployerAssessmentsService {
     const answers = this.flattenExternalResponses(dto.responses);
     const score = this.computeScore(assessment.questions, answers);
     const passed = score >= assessment.passing_threshold;
+    // Registration is the start of the clock, so this can't be faked client side.
+    const elapsed = this.elapsedSeconds(applicant.created_at);
+    const sharedNetwork = applicant.ip_hash
+      ? (await this.externalApplicantRepo.count({
+          where: {
+            assessment_id: assessment.id,
+            ip_hash: applicant.ip_hash,
+            id: Not(applicant.id),
+          },
+        })) > 0
+      : false;
+    const integrity = evaluateIntegrity({
+      events: dto.integrity,
+      elapsedSeconds: elapsed,
+      timeLimitSeconds: assessment.time_limit_minutes * 60,
+      questionCount: assessment.questions.length,
+      sharedNetwork,
+    });
     const submission = await this.externalSubmissionRepo.save({
       assessment_id: assessment.id,
       external_applicant_id: applicant.id,
       responses: dto.responses as unknown as Record<string, unknown>[],
       score,
       passed,
+      time_taken_seconds: elapsed,
+      integrity,
+      integrity_level: integrity.level,
     } as Partial<EmployerAssessmentExternalSubmission>);
 
     await this.notificationDispatch.dispatch(
@@ -1099,6 +1170,69 @@ export class EmployerAssessmentsService {
     }, {});
   }
 
+  /** Opens (or resumes) an attempt so the time limit is measured on the server. */
+  async startAssessment(
+    candidateUserId: string,
+    token: string,
+  ): Promise<{
+    started_at: Date;
+    time_limit_seconds: number;
+    remaining_seconds: number;
+  }> {
+    const assessment = await this.assessmentRepo.findOne({
+      where: { share_token: token },
+    });
+    if (!assessment) {
+      throw new NotFoundError('Assessment not found');
+    }
+    if (!assessment.is_active) {
+      throw new ForbiddenError(
+        'This assessment is no longer accepting submissions.',
+      );
+    }
+    const submitted = await this.submissionRepo.count({
+      where: {
+        assessment_id: assessment.id,
+        candidate_user_id: candidateUserId,
+      },
+    });
+    if (submitted > 0) {
+      throw new ConflictError('You have already submitted this assessment.');
+    }
+
+    let attempt = await this.attemptRepo.findOne({
+      where: {
+        assessment_id: assessment.id,
+        candidate_user_id: candidateUserId,
+      },
+    });
+    if (!attempt) {
+      try {
+        attempt = await this.attemptRepo.save({
+          assessment_id: assessment.id,
+          candidate_user_id: candidateUserId,
+        } as Partial<EmployerAssessmentAttempt> as EmployerAssessmentAttempt);
+      } catch (error: unknown) {
+        if (!isPostgresUniqueViolation(error)) throw error;
+        // Two tabs raced; use whichever attempt won.
+        attempt = await this.attemptRepo.findOneOrFail({
+          where: {
+            assessment_id: assessment.id,
+            candidate_user_id: candidateUserId,
+          },
+        });
+      }
+    }
+    return {
+      started_at: attempt.started_at,
+      time_limit_seconds: assessment.time_limit_minutes * 60,
+      remaining_seconds: this.remainingSeconds(
+        attempt.started_at,
+        assessment.time_limit_minutes,
+      ),
+    };
+  }
+
   async submitAssessment(
     candidateUserId: string,
     token: string,
@@ -1134,6 +1268,25 @@ export class EmployerAssessmentsService {
     const score = this.computeScore(assessment.questions, dto.answers ?? {});
     const passed = score >= assessment.passing_threshold;
 
+    // Prefer the server clock; fall back to the client value for candidates
+    // who never hit the start endpoint (older clients).
+    const attempt = await this.attemptRepo.findOne({
+      where: {
+        assessment_id: assessment.id,
+        candidate_user_id: candidateUserId,
+      },
+    });
+    const elapsed = attempt
+      ? this.elapsedSeconds(attempt.started_at)
+      : dto.timeTakenSeconds;
+    const integrity = evaluateIntegrity({
+      events: dto.integrity,
+      elapsedSeconds: elapsed,
+      timeLimitSeconds: assessment.time_limit_minutes * 60,
+      questionCount: assessment.questions.length,
+      sharedNetwork: false,
+    });
+
     let submission: EmployerAssessmentSubmission;
     let updatedOffers: OfferNotificationRow[];
     try {
@@ -1143,9 +1296,11 @@ export class EmployerAssessmentsService {
           candidate_user_id: candidateUserId,
           score,
           passed,
-          time_taken_seconds: dto.timeTakenSeconds,
+          time_taken_seconds: elapsed,
           delivery_mode: dto.deliveryMode,
           answers: dto.answers ?? null,
+          integrity,
+          integrity_level: integrity.level,
         } as Partial<EmployerAssessmentSubmission>);
 
         const offers = await this.updateLinkedOffersInTx(
@@ -1318,6 +1473,8 @@ export class EmployerAssessmentsService {
         timeTakenSeconds: submission.time_taken_seconds,
         dateCompleted: submission.completed_at,
         deliveryMode: submission.delivery_mode,
+        integrityLevel: submission.integrity_level ?? null,
+        integrityReasons: submission.integrity?.reasons ?? [],
       })),
       ...external.map((submission) => ({
         id: submission.id,
@@ -1327,9 +1484,11 @@ export class EmployerAssessmentsService {
         email: submission.external_applicant?.email ?? null,
         score: submission.score,
         status: submission.passed ? ('pass' as const) : ('fail' as const),
-        timeTakenSeconds: null,
+        timeTakenSeconds: submission.time_taken_seconds ?? null,
         dateCompleted: submission.submitted_at,
         deliveryMode: 'link',
+        integrityLevel: submission.integrity_level ?? null,
+        integrityReasons: submission.integrity?.reasons ?? [],
       })),
     ];
 
@@ -1442,15 +1601,18 @@ export class EmployerAssessmentsService {
     }
 
     let answers: Record<string, unknown> = {};
+    let integrityEvents: IntegrityEvents | null;
     if (row.source === 'talent') {
       const submission = await this.submissionRepo.findOne({
         where: { id: submissionId, assessment_id: assessmentId },
       });
       answers = submission?.answers ?? {};
+      integrityEvents = submission?.integrity?.events ?? null;
     } else {
       const submission = await this.externalSubmissionRepo.findOne({
         where: { id: submissionId, assessment_id: assessmentId },
       });
+      integrityEvents = submission?.integrity?.events ?? null;
       answers = this.flattenExternalResponses(
         (submission?.responses ??
           []) as unknown as SubmitExternalAssessmentDto['responses'],
@@ -1482,6 +1644,7 @@ export class EmployerAssessmentsService {
       questions,
       correctCount: questions.filter((question) => question.isCorrect).length,
       questionCount: questions.length,
+      integrityEvents,
     };
   }
 

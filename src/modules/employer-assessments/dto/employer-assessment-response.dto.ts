@@ -121,6 +121,12 @@ export class PublicEmployerAssessmentResponseDto {
   @ApiProperty()
   passing_threshold: number;
 
+  @ApiProperty({ enum: ['internal', 'external'] })
+  type: string;
+
+  @ApiProperty({ nullable: true })
+  employer_name: string | null;
+
   @ApiProperty({ type: [PublicEmployerAssessmentQuestionResponseDto] })
   questions: PublicEmployerAssessmentQuestionResponseDto[];
 }

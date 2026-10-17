@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { ApiProperty } from '@nestjs/swagger';
 import { User } from '../../users/entities/user.entity';
+import type { IntegrityLevel, IntegrityReport } from '../assessment-integrity';
 import { EmployerAssessment } from './employer-assessment.entity';
 import { EmployerAssessmentDeliveryMode } from './employer-assessment-invite.entity';
 
@@ -66,6 +67,12 @@ export class EmployerAssessmentSubmission {
   @ApiProperty({ required: false, nullable: true })
   @Column({ type: 'jsonb', nullable: true })
   answers: Record<string, unknown> | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  integrity: IntegrityReport | null;
+
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  integrity_level: IntegrityLevel | null;
 
   @ApiProperty()
   @CreateDateColumn({ type: 'timestamp with time zone' })

@@ -20,6 +20,7 @@ import type { TalentRoleTrack } from '@modules/talent/talent.constants';
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
 import { CredlaneCatalogueQuestion } from './entities/credlane-catalogue-question.entity';
+import { EmployerAssessmentAttempt } from './entities/employer-assessment-attempt.entity';
 import { EmployerSavedCandidate } from '../employer-discovery/entities/employer-saved-candidate.entity';
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
 import { EmployerPoolProfile } from '../talent/entities/employer-pool-profile.entity';
@@ -50,6 +51,7 @@ describe('EmployerAssessmentsService', () => {
   const mockSubmissionRepo = {
     save: jest.fn(),
     findOne: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
     find: jest.fn().mockResolvedValue([]),
     findAndCount: jest.fn().mockResolvedValue([[], 0]),
     createQueryBuilder: jest.fn().mockReturnValue({
@@ -121,9 +123,16 @@ describe('EmployerAssessmentsService', () => {
     },
   };
 
+  const mockAttemptRepo = {
+    findOne: jest.fn(),
+    findOneOrFail: jest.fn(),
+    save: jest.fn(),
+  };
+
   const mockExternalApplicantRepo = {
     findOne: jest.fn(),
     save: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
   };
 
   const mockExternalInviteRepo = {
@@ -135,6 +144,7 @@ describe('EmployerAssessmentsService', () => {
     find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn(),
     save: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
   };
 
   const mockNotificationDispatch = {
@@ -171,6 +181,10 @@ describe('EmployerAssessmentsService', () => {
         {
           provide: getRepositoryToken(EmployerAssessmentSubmission),
           useValue: mockSubmissionRepo,
+        },
+        {
+          provide: getRepositoryToken(EmployerAssessmentAttempt),
+          useValue: mockAttemptRepo,
         },
         {
           provide: getRepositoryToken(CredlaneCatalogueQuestion),
@@ -1050,6 +1064,172 @@ describe('EmployerAssessmentsService', () => {
 
       expect(result.emptyState).toContain('No submissions yet');
       expect(result.summary.averageScore).toBeNull();
+    });
+  });
+
+  describe('server-side timing and integrity', () => {
+    const assessment = {
+      id: 'ass-1',
+      is_active: true,
+      share_token: 'token-abc',
+      type: 'external',
+      passing_threshold: 60,
+      time_limit_minutes: 10,
+      employer_user_id: 'employer-1',
+      questions: [
+        {
+          id: 'q-1',
+          correct_answer: 'A',
+          question_text: 'Q1',
+          question_type: EmployerQuestionType.MULTIPLE_CHOICE,
+        },
+      ],
+    };
+    const secondsAgo = (n: number) => new Date(Date.now() - n * 1000);
+    const submitDto = {
+      externalApplicantId: 'app-1',
+      responses: [
+        { moduleId: 'ass-1', answers: [{ questionId: 'q-1', answer: 'A' }] },
+      ],
+    } as unknown as Parameters<typeof service.submitExternalAssessment>[2];
+
+    beforeEach(() => {
+      mockAssessmentRepo.findOne.mockResolvedValue(assessment);
+      mockExternalSubmissionRepo.findOne.mockResolvedValue(null);
+      mockExternalSubmissionRepo.save.mockImplementation(
+        async (data: Record<string, unknown>) => ({ id: 'sub-1', ...data }),
+      );
+      mockExternalApplicantRepo.count.mockResolvedValue(0);
+      mockEmployerProfileRepo.findOne.mockResolvedValue(null);
+      mockUserRepo.findOne.mockResolvedValue(null);
+    });
+
+    it('measures external time from registration, not from the client', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue({
+        id: 'app-1',
+        email: 'a@b.co',
+        ip_hash: null,
+        created_at: secondsAgo(120),
+        session_expires_at: new Date(Date.now() + 100000),
+      });
+
+      await service.submitExternalAssessment('token-abc', 'sess', {
+        ...submitDto,
+        integrity: {
+          tabSwitches: 0,
+          awaySeconds: 0,
+          pasteAttempts: 0,
+          copyAttempts: 0,
+        },
+      } as typeof submitDto);
+
+      const saved = mockExternalSubmissionRepo.save.mock.calls[0][0] as {
+        time_taken_seconds: number;
+        integrity_level: string;
+      };
+      expect(saved.time_taken_seconds).toBeGreaterThanOrEqual(119);
+      expect(saved.time_taken_seconds).toBeLessThanOrEqual(122);
+      expect(saved.integrity_level).toBe('clean');
+    });
+
+    it('flags an external submission finished impossibly fast', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue({
+        id: 'app-1',
+        email: 'a@b.co',
+        ip_hash: null,
+        created_at: secondsAgo(1),
+        session_expires_at: new Date(Date.now() + 100000),
+      });
+
+      await service.submitExternalAssessment('token-abc', 'sess', submitDto);
+
+      const saved = mockExternalSubmissionRepo.save.mock.calls[0][0] as {
+        integrity_level: string;
+      };
+      expect(saved.integrity_level).toBe('flagged');
+    });
+
+    it('marks a shared network for review, never flagged on its own', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue({
+        id: 'app-1',
+        email: 'a@b.co',
+        ip_hash: 'hash',
+        created_at: secondsAgo(120),
+        session_expires_at: new Date(Date.now() + 100000),
+      });
+      mockExternalApplicantRepo.count.mockResolvedValue(2);
+
+      await service.submitExternalAssessment('token-abc', 'sess', submitDto);
+
+      const saved = mockExternalSubmissionRepo.save.mock.calls[0][0] as {
+        integrity_level: string;
+      };
+      expect(saved.integrity_level).toBe('review');
+    });
+
+    it('stores only a hash of the applicant ip on registration', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue(null);
+      mockExternalApplicantRepo.save.mockImplementation(
+        async (data: Record<string, unknown>) => ({
+          id: 'app-1',
+          created_at: new Date(),
+          ...data,
+        }),
+      );
+
+      const result = await service.registerExternalApplicant(
+        'token-abc',
+        { email: 'A@B.co', consentedMarketing: false },
+        '203.0.113.9',
+      );
+
+      const saved = mockExternalApplicantRepo.save.mock.calls[0][0] as {
+        ip_hash: string;
+      };
+      expect(saved.ip_hash).toMatch(/^[a-f0-9]{64}$/);
+      expect(saved.ip_hash).not.toContain('203.0.113.9');
+      expect(result.remaining_seconds).toBe(600);
+      expect(result.submitted).toBe(false);
+    });
+
+    it('resumes a returning applicant with the time left', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue({
+        id: 'app-1',
+        email: 'a@b.co',
+        session_token: 'sess',
+        created_at: secondsAgo(100),
+      });
+
+      const result = await service.registerExternalApplicant('token-abc', {
+        email: 'a@b.co',
+        consentedMarketing: false,
+      });
+
+      expect(result.remaining_seconds).toBeGreaterThanOrEqual(498);
+      expect(result.remaining_seconds).toBeLessThanOrEqual(500);
+    });
+
+    it('starts a talent attempt once and resumes it afterwards', async () => {
+      mockSubmissionRepo.count.mockResolvedValue(0);
+      const startedAt = secondsAgo(60);
+      mockAttemptRepo.findOne.mockResolvedValueOnce(null);
+      mockAttemptRepo.save.mockResolvedValue({ started_at: startedAt });
+
+      const first = await service.startAssessment('cand-1', 'token-abc');
+      expect(mockAttemptRepo.save).toHaveBeenCalledTimes(1);
+      expect(first.time_limit_seconds).toBe(600);
+
+      mockAttemptRepo.findOne.mockResolvedValueOnce({ started_at: startedAt });
+      const again = await service.startAssessment('cand-1', 'token-abc');
+      expect(mockAttemptRepo.save).toHaveBeenCalledTimes(1);
+      expect(again.remaining_seconds).toBeLessThanOrEqual(540);
+    });
+
+    it('refuses to start an already submitted talent assessment', async () => {
+      mockSubmissionRepo.count.mockResolvedValue(1);
+      await expect(
+        service.startAssessment('cand-1', 'token-abc'),
+      ).rejects.toThrow('already submitted');
     });
   });
 

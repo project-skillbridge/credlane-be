@@ -5,6 +5,7 @@ import {
   Headers,
   HttpCode,
   HttpStatus,
+  Ip,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -309,10 +310,12 @@ export class EmployerAssessmentsController {
   registerExternalAssessment(
     @Param('token') token: string,
     @Body() dto: RegisterExternalAssessmentDto,
+    @Ip() ip: string,
   ) {
     return this.employerAssessmentsService.registerExternalApplicant(
       token,
       dto,
+      ip,
     );
   }
 
@@ -328,6 +331,19 @@ export class EmployerAssessmentsController {
       token,
       sessionToken,
       dto,
+    );
+  }
+
+  @Post('assessments/link/:token/start')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.TALENT)
+  startAssessment(
+    @CurrentUser('sub') candidateUserId: string,
+    @Param('token') token: string,
+  ) {
+    return this.employerAssessmentsService.startAssessment(
+      candidateUserId,
+      token,
     );
   }
 

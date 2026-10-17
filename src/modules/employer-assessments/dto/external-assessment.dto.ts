@@ -5,10 +5,12 @@ import {
   IsBoolean,
   IsEmail,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
   ValidateNested,
 } from 'class-validator';
+import { IntegrityEventsDto } from './integrity-events.dto';
 
 export class RegisterExternalAssessmentDto {
   @ApiProperty({ example: 'candidate@example.com' })
@@ -54,4 +56,10 @@ export class SubmitExternalAssessmentDto {
   @ValidateNested({ each: true })
   @Type(() => ExternalAssessmentModuleResponseDto)
   responses: ExternalAssessmentModuleResponseDto[];
+
+  @ApiProperty({ required: false, type: IntegrityEventsDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => IntegrityEventsDto)
+  integrity?: IntegrityEventsDto;
 }

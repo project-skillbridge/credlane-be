@@ -13,6 +13,7 @@ export {
   EmployerAssessmentDeliveryMode,
 } from './employer-assessment-invite.entity';
 export { EmployerAssessmentSubmission } from './employer-assessment-submission.entity';
+export { EmployerAssessmentAttempt } from './employer-assessment-attempt.entity';
 export { CredlaneCatalogueAssessment } from './credlane-catalogue-assessment.entity';
 export { CredlaneCatalogueQuestion } from './credlane-catalogue-question.entity';
 export { EmployerAssessmentExternalApplicant } from './employer-assessment-external-applicant.entity';
