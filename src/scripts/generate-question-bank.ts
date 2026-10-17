@@ -2,7 +2,10 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
 import { AssessmentType, VerifiedLevel } from '../modules/assessments/entities';
-import { QuestionBankGeneratorService } from '../tasks/question-bank-generator.service';
+import {
+  QuestionBankGeneratorService,
+  type QuestionBankGeneratorAssessmentType,
+} from '../tasks/question-bank-generator.service';
 
 function readArg(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -29,7 +32,9 @@ function readCsv(flag: string): string[] | undefined {
     .filter(Boolean);
 }
 
-function readAssessmentTypes(): AssessmentType[] | undefined {
+function readAssessmentTypes():
+  | QuestionBankGeneratorAssessmentType[]
+  | undefined {
   const value = readArg('--assessment-type');
   if (!value || value === 'all') {
     return undefined;
@@ -39,7 +44,10 @@ function readAssessmentTypes(): AssessmentType[] | undefined {
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean)
-    .map((entry) => entry as AssessmentType);
+    .filter(
+      (entry): entry is QuestionBankGeneratorAssessmentType =>
+        entry === AssessmentType.SKILL || entry === AssessmentType.ADVANCED,
+    );
 
   return types.length > 0 ? types : undefined;
 }
