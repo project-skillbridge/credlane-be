@@ -1662,6 +1662,100 @@ describe('EmployerAssessmentsService', () => {
       ).rejects.toThrow('does not have enough questions');
     });
 
+    it('should reject asking for more questions than the library entry has', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockCatalogueRepo.findOne.mockResolvedValue({
+        id: '00000000-0000-0000-0000-000000000001',
+        role_track: 'backend_developer',
+        experience_level: EmployerAssessmentExperienceLevel.MID,
+        is_active: true,
+      });
+      mockCatalogueQuestionRepo.find.mockResolvedValue(
+        Array.from({ length: 6 }, (_, i) => ({
+          question_text: `Library Q${i + 1}`,
+          question_type: 'multiple_choice',
+          options: ['A', 'B', 'C', 'D'],
+          correct_answer: 'A',
+          position: i + 1,
+        })),
+      );
+
+      await expect(
+        service.createAssessment('emp-1', {
+          ...credlaneBankDto,
+          credlaneAssessmentId: '00000000-0000-0000-0000-000000000001',
+          questionCount: 10,
+        }),
+      ).rejects.toThrow('only has 6 questions');
+    });
+
+    it('should copy only the requested number of library questions, in library order', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockCatalogueRepo.findOne.mockResolvedValue({
+        id: '00000000-0000-0000-0000-000000000001',
+        role_track: 'backend_developer',
+        experience_level: EmployerAssessmentExperienceLevel.MID,
+        is_active: true,
+      });
+      mockCatalogueQuestionRepo.find.mockResolvedValue(
+        Array.from({ length: 12 }, (_, i) => ({
+          question_text: `Library Q${i + 1}`,
+          question_type: 'multiple_choice',
+          options: ['A', 'B', 'C', 'D'],
+          correct_answer: 'A',
+          position: i + 1,
+        })),
+      );
+      const lockQueryBuilder = {
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: 'emp-1', is_verified: true }),
+      };
+      const save = jest
+        .fn()
+        .mockResolvedValueOnce({
+          id: 'assessment-3',
+          employer_user_id: 'emp-1',
+          share_token: 'tok',
+          is_active: true,
+        })
+        .mockResolvedValueOnce([]);
+      mockAssessmentRepo.manager.transaction.mockImplementation(
+        async (cb: (manager: unknown) => Promise<unknown>) =>
+          cb({
+            getRepository: jest.fn().mockReturnValue({
+              createQueryBuilder: jest.fn().mockReturnValue(lockQueryBuilder),
+            }),
+            count: jest.fn().mockResolvedValue(0),
+            save,
+          }),
+      );
+
+      await service.createAssessment('emp-1', {
+        ...credlaneBankDto,
+        credlaneAssessmentId: '00000000-0000-0000-0000-000000000001',
+        questionCount: 7,
+      });
+
+      const copied = save.mock.calls[1][1] as Array<{
+        question_text: string;
+        position: number;
+      }>;
+      expect(copied).toHaveLength(7);
+      expect(copied.map((q) => q.position)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      const sourceNumbers = copied.map((q) =>
+        Number(q.question_text.replace('Library Q', '')),
+      );
+      expect(sourceNumbers).toEqual([...sourceNumbers].sort((a, b) => a - b));
+      expect(new Set(sourceNumbers).size).toBe(7);
+    });
+
     it('should create an assessment from credlane_bank with valid catalogue item', async () => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',

@@ -123,6 +123,24 @@ export class CreateEmployerAssessmentDto {
   @IsUUID('4')
   credlaneAssessmentId?: string;
 
+  @ApiProperty({
+    required: false,
+    minimum: 5,
+    maximum: 50,
+    description:
+      'Library assessments only: how many questions to use. A random selection of this size is taken from the library entry.',
+  })
+  @ValidateIf(
+    (dto: CreateEmployerAssessmentDto) =>
+      dto.questionSource === EmployerAssessmentQuestionSource.CREDLANE_BANK &&
+      dto.questionCount !== undefined,
+  )
+  @Type(() => Number)
+  @IsInt()
+  @Min(5)
+  @Max(50)
+  questionCount?: number;
+
   @ApiProperty()
   @IsBoolean()
   shareViaLink: boolean;

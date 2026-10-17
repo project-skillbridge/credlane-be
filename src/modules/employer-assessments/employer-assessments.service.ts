@@ -1672,12 +1672,35 @@ export class EmployerAssessmentsService {
       );
     }
 
-    return libraryQuestions.map((question) => ({
+    const wanted = dto.questionCount ?? libraryQuestions.length;
+    if (wanted > libraryQuestions.length) {
+      throw new BadRequestError(
+        `This library assessment only has ${libraryQuestions.length} questions`,
+      );
+    }
+    // A random selection, kept in the library's order so the test still reads coherently.
+    const selected =
+      wanted === libraryQuestions.length
+        ? libraryQuestions
+        : this.pickRandom(libraryQuestions, wanted).sort(
+            (a, b) => a.position - b.position,
+          );
+
+    return selected.map((question) => ({
       questionText: question.question_text,
       questionType: question.question_type,
       options: question.options ?? undefined,
       correctAnswer: question.correct_answer,
     }));
+  }
+
+  private pickRandom<T>(items: T[], count: number): T[] {
+    const copy = [...items];
+    for (let i = copy.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy.slice(0, count);
   }
 
   private normalizeCompanyQuestions(
