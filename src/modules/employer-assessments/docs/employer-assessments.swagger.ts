@@ -187,6 +187,21 @@ export const ApiListEmployerAssessmentResults = () =>
     ApiResponse({ status: 500, description: 'Internal server error' }),
   );
 
+export const ApiGetEmployerAssessmentResultDetail = () =>
+  applyDecorators(
+    ApiBearerAuth(),
+    ApiOperation({
+      summary: 'Get one submission with per-question answers and rank',
+    }),
+    ApiResponse({ status: 200, description: 'Submission detail returned' }),
+    ApiResponse({ status: 401, description: 'Authentication required' }),
+    ApiResponse({ status: 403, description: 'Employer access required' }),
+    ApiResponse({
+      status: 404,
+      description: 'Assessment or submission not found',
+    }),
+  );
+
 export const ApiGetPublicAssessment = () =>
   applyDecorators(
     ApiOperation({ summary: 'Get public assessment by share token' }),

@@ -67,22 +67,54 @@ import {
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
 
+export type AssessmentResultRow = {
+  id: string;
+  source: 'talent' | 'external';
+  candidateUserId: string | null;
+  candidateName: string | null;
+  email: string | null;
+  score: number;
+  status: 'pass' | 'fail';
+  timeTakenSeconds: number | null;
+  dateCompleted: Date;
+  deliveryMode: string | null;
+  /** 1-based rank by score across every submission; ties share a rank. */
+  rank: number;
+  /** Share of the other candidates this one outscored; null under 3 submissions. */
+  percentile: number | null;
+};
+
+export type AssessmentResultsSummary = {
+  total: number;
+  averageScore: number | null;
+  medianScore: number | null;
+  topScore: number | null;
+  passRate: number | null;
+};
+
 export type AssessmentListResultsResponse = {
-  submissions: Array<{
-    id: string;
-    candidateUserId: string;
-    candidateName: string | null;
-    score: number;
-    status: string;
-    timeTakenSeconds: number;
-    dateCompleted: Date;
-    deliveryMode: string;
-  }>;
+  submissions: AssessmentResultRow[];
+  summary: AssessmentResultsSummary;
   total: number;
   page: number;
   limit: number;
   totalPages: number;
   emptyState: string | null;
+};
+
+export type AssessmentResultDetail = AssessmentResultRow & {
+  questions: Array<{
+    questionId: string;
+    position: number;
+    questionText: string;
+    questionType: string;
+    options: string[] | null;
+    correctAnswer: string;
+    givenAnswer: string | null;
+    isCorrect: boolean;
+  }>;
+  correctCount: number;
+  questionCount: number;
 };
 
 const ACTIVE_ASSESSMENT_LIMIT = 5;
@@ -1184,11 +1216,98 @@ export class EmployerAssessmentsService {
     }
   }
 
+  private async loadResultRows(
+    assessmentId: string,
+  ): Promise<AssessmentResultRow[]> {
+    const [internal, external] = await Promise.all([
+      this.submissionRepo.find({
+        where: { assessment_id: assessmentId },
+        relations: ['candidate'],
+      }),
+      this.externalSubmissionRepo.find({
+        where: { assessment_id: assessmentId },
+        relations: ['external_applicant'],
+      }),
+    ]);
+
+    const rows: Omit<AssessmentResultRow, 'rank' | 'percentile'>[] = [
+      ...internal.map((submission) => ({
+        id: submission.id,
+        source: 'talent' as const,
+        candidateUserId: submission.candidate_user_id,
+        candidateName: submission.candidate
+          ? `${submission.candidate.first_name ?? ''} ${
+              submission.candidate.last_name ?? ''
+            }`.trim() || null
+          : null,
+        email: null,
+        score: submission.score,
+        status: submission.passed ? ('pass' as const) : ('fail' as const),
+        timeTakenSeconds: submission.time_taken_seconds,
+        dateCompleted: submission.completed_at,
+        deliveryMode: submission.delivery_mode,
+      })),
+      ...external.map((submission) => ({
+        id: submission.id,
+        source: 'external' as const,
+        candidateUserId: null,
+        candidateName: null,
+        email: submission.external_applicant?.email ?? null,
+        score: submission.score,
+        status: submission.passed ? ('pass' as const) : ('fail' as const),
+        timeTakenSeconds: null,
+        dateCompleted: submission.submitted_at,
+        deliveryMode: 'link',
+      })),
+    ];
+
+    const total = rows.length;
+    return rows.map((row) => {
+      const higher = rows.filter((other) => other.score > row.score).length;
+      const lower = rows.filter((other) => other.score < row.score).length;
+      return {
+        ...row,
+        rank: higher + 1,
+        percentile: total >= 3 ? Math.round((lower / (total - 1)) * 100) : null,
+      };
+    });
+  }
+
+  private summarizeResults(
+    rows: AssessmentResultRow[],
+  ): AssessmentResultsSummary {
+    if (rows.length === 0) {
+      return {
+        total: 0,
+        averageScore: null,
+        medianScore: null,
+        topScore: null,
+        passRate: null,
+      };
+    }
+    const scores = rows.map((row) => row.score).sort((a, b) => a - b);
+    const mid = Math.floor(scores.length / 2);
+    const median =
+      scores.length % 2 === 0
+        ? (scores[mid - 1] + scores[mid]) / 2
+        : scores[mid];
+    const passed = rows.filter((row) => row.status === 'pass').length;
+    return {
+      total: rows.length,
+      averageScore: Math.round(
+        scores.reduce((sum, score) => sum + score, 0) / scores.length,
+      ),
+      medianScore: Math.round(median),
+      topScore: scores[scores.length - 1],
+      passRate: Math.round((passed / rows.length) * 100),
+    };
+  }
+
   async listResults(
     employerUserId: string,
     assessmentId: string,
     query: ListEmployerAssessmentResultsQueryDto,
-  ) {
+  ): Promise<AssessmentListResultsResponse> {
     await this.ensureVerifiedEmployer(employerUserId);
     const assessment = await this.assessmentRepo.findOne({
       where: { id: assessmentId, employer_user_id: employerUserId },
@@ -1199,42 +1318,95 @@ export class EmployerAssessmentsService {
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const where: Record<string, unknown> = { assessment_id: assessmentId };
-    if (query.status) {
-      where.passed = query.status === 'pass';
-    }
+    const all = await this.loadResultRows(assessmentId);
+    const summary = this.summarizeResults(all);
 
-    const [submissions, total] = await this.submissionRepo.findAndCount({
-      where,
-      relations: ['candidate'],
-      order: { completed_at: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const filtered = all
+      .filter((row) => !query.status || row.status === query.status)
+      .filter((row) => !query.source || row.source === query.source);
 
+    const byDate = (a: AssessmentResultRow, b: AssessmentResultRow) =>
+      new Date(b.dateCompleted).getTime() - new Date(a.dateCompleted).getTime();
+    filtered.sort(
+      query.sort === 'date'
+        ? byDate
+        : (a, b) => b.score - a.score || byDate(a, b),
+    );
+
+    const total = filtered.length;
     return {
-      submissions: submissions.map((submission) => ({
-        id: submission.id,
-        candidateUserId: submission.candidate_user_id,
-        candidateName: submission.candidate
-          ? `${submission.candidate.first_name ?? ''} ${
-              submission.candidate.last_name ?? ''
-            }`.trim()
-          : null,
-        score: submission.score,
-        status: submission.passed ? 'pass' : 'fail',
-        timeTakenSeconds: submission.time_taken_seconds,
-        dateCompleted: submission.completed_at,
-        deliveryMode: submission.delivery_mode,
-      })),
+      submissions: filtered.slice((page - 1) * limit, page * limit),
+      summary,
       total,
       page,
       limit,
       totalPages: Math.ceil(total / limit),
       emptyState:
-        total === 0
+        all.length === 0
           ? 'No submissions yet. Share your assessment link or send it to candidates to get started.'
           : null,
+    };
+  }
+
+  async getResultDetail(
+    employerUserId: string,
+    assessmentId: string,
+    submissionId: string,
+  ): Promise<AssessmentResultDetail> {
+    await this.ensureVerifiedEmployer(employerUserId);
+    const assessment = await this.assessmentRepo.findOne({
+      where: { id: assessmentId, employer_user_id: employerUserId },
+      relations: ['questions'],
+      order: { questions: { position: 'ASC' } },
+    });
+    if (!assessment) {
+      throw new NotFoundError('Assessment not found');
+    }
+
+    const rows = await this.loadResultRows(assessmentId);
+    const row = rows.find((candidate) => candidate.id === submissionId);
+    if (!row) {
+      throw new NotFoundError('Submission not found');
+    }
+
+    let answers: Record<string, unknown> = {};
+    if (row.source === 'talent') {
+      const submission = await this.submissionRepo.findOne({
+        where: { id: submissionId, assessment_id: assessmentId },
+      });
+      answers = submission?.answers ?? {};
+    } else {
+      const submission = await this.externalSubmissionRepo.findOne({
+        where: { id: submissionId, assessment_id: assessmentId },
+      });
+      answers = this.flattenExternalResponses(
+        (submission?.responses ??
+          []) as unknown as SubmitExternalAssessmentDto['responses'],
+      );
+    }
+
+    const questions = [...(assessment.questions ?? [])]
+      .sort((a, b) => a.position - b.position)
+      .map((question) => {
+        const given = this.normalizeSubmittedAnswer(answers[question.id]);
+        const expected = question.correct_answer.trim().toLowerCase();
+        return {
+          questionId: question.id,
+          position: question.position,
+          questionText: question.question_text,
+          questionType: question.question_type,
+          options: question.options,
+          correctAnswer: question.correct_answer,
+          givenAnswer: given === '' ? null : String(answers[question.id]),
+          isCorrect: given === expected,
+        };
+      });
+
+    return {
+      ...row,
+      questions,
+      correctCount: questions.filter((question) => question.isCorrect).length,
+      questionCount: questions.length,
     };
   }
 

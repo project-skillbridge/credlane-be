@@ -50,6 +50,7 @@ describe('EmployerAssessmentsService', () => {
   const mockSubmissionRepo = {
     save: jest.fn(),
     findOne: jest.fn(),
+    find: jest.fn().mockResolvedValue([]),
     findAndCount: jest.fn().mockResolvedValue([[], 0]),
     createQueryBuilder: jest.fn().mockReturnValue({
       select: jest.fn().mockReturnThis(),
@@ -121,6 +122,7 @@ describe('EmployerAssessmentsService', () => {
   };
 
   const mockExternalSubmissionRepo = {
+    find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn(),
     save: jest.fn(),
   };
@@ -928,7 +930,7 @@ describe('EmployerAssessmentsService', () => {
   // ─── listResults ───────────────────────────────────────────────────────────
 
   describe('listResults', () => {
-    it('should return results filtered by pass/fail status', async () => {
+    const verifiedEmployer = () => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
         is_verified: true,
@@ -937,20 +939,43 @@ describe('EmployerAssessmentsService', () => {
         id: 'ass-1',
         employer_user_id: 'emp-1',
       });
+    };
 
-      const submissions = [
-        {
-          id: 'sub-1',
-          candidate_user_id: 'c-1',
-          candidate: { first_name: 'John', last_name: 'Doe' },
-          score: 80,
-          passed: true,
-          time_taken_seconds: 600,
-          completed_at: new Date(),
-          delivery_mode: EmployerAssessmentDeliveryMode.LINK,
-        },
-      ];
-      mockSubmissionRepo.findAndCount.mockResolvedValue([submissions, 1]);
+    const talentSubmission = (
+      id: string,
+      score: number,
+      passed: boolean,
+      first = 'John',
+    ) => ({
+      id,
+      candidate_user_id: `u-${id}`,
+      candidate: { first_name: first, last_name: 'Doe' },
+      score,
+      passed,
+      time_taken_seconds: 600,
+      completed_at: new Date('2026-01-02T00:00:00Z'),
+      delivery_mode: EmployerAssessmentDeliveryMode.LINK,
+    });
+
+    const externalSubmission = (
+      id: string,
+      score: number,
+      passed: boolean,
+    ) => ({
+      id,
+      score,
+      passed,
+      external_applicant: { email: `${id}@mail.com` },
+      submitted_at: new Date('2026-01-03T00:00:00Z'),
+    });
+
+    it('should return results filtered by pass/fail status', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([
+        talentSubmission('s1', 80, true),
+        talentSubmission('s2', 40, false, 'Jane'),
+      ]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([]);
 
       const result = await service.listResults('emp-1', 'ass-1', {
         status: 'pass',
@@ -959,9 +984,67 @@ describe('EmployerAssessmentsService', () => {
       expect(result.submissions[0].candidateName).toBe('John Doe');
       expect(result.submissions[0].status).toBe('pass');
       expect(result.total).toBe(1);
+      expect(result.summary.total).toBe(2);
+    });
+
+    it('should include external takers, ranked together with talent', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([
+        talentSubmission('s1', 70, true),
+      ]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([
+        externalSubmission('e1', 90, true),
+        externalSubmission('e2', 50, false),
+      ]);
+
+      const result = await service.listResults('emp-1', 'ass-1', {});
+
+      expect(result.submissions.map((r) => r.id)).toEqual(['e1', 's1', 'e2']);
+      expect(result.submissions[0]).toMatchObject({
+        source: 'external',
+        email: 'e1@mail.com',
+        candidateName: null,
+        rank: 1,
+        percentile: 100,
+      });
+      expect(result.submissions[1].rank).toBe(2);
+      expect(result.summary).toMatchObject({
+        total: 3,
+        averageScore: 70,
+        medianScore: 70,
+        topScore: 90,
+        passRate: 67,
+      });
+    });
+
+    it('should give tied scores the same rank and hide percentile under 3', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([
+        talentSubmission('s1', 80, true),
+        talentSubmission('s2', 80, true),
+      ]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([]);
+
+      const result = await service.listResults('emp-1', 'ass-1', {});
+
+      expect(result.submissions.map((r) => r.rank)).toEqual([1, 1]);
+      expect(result.submissions[0].percentile).toBeNull();
     });
 
     it('should return empty state when no submissions exist', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([]);
+
+      const result = await service.listResults('emp-1', 'ass-1', {});
+
+      expect(result.emptyState).toContain('No submissions yet');
+      expect(result.summary.averageScore).toBeNull();
+    });
+  });
+
+  describe('getResultDetail', () => {
+    it('should mark each question right or wrong for an external taker', async () => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
         is_verified: true,
@@ -969,12 +1052,68 @@ describe('EmployerAssessmentsService', () => {
       mockAssessmentRepo.findOne.mockResolvedValue({
         id: 'ass-1',
         employer_user_id: 'emp-1',
+        questions: [
+          {
+            id: 'q2',
+            position: 2,
+            question_text: 'Second',
+            question_type: 'true_false',
+            options: null,
+            correct_answer: 'false',
+          },
+          {
+            id: 'q1',
+            position: 1,
+            question_text: 'First',
+            question_type: 'multiple_choice',
+            options: ['a', 'b'],
+            correct_answer: 'a',
+          },
+        ],
       });
-      mockSubmissionRepo.findAndCount.mockResolvedValue([[], 0]);
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      const external = {
+        id: 'e1',
+        score: 50,
+        passed: false,
+        external_applicant: { email: 'x@mail.com' },
+        submitted_at: new Date(),
+        responses: [
+          {
+            answers: [
+              { questionId: 'q1', answer: 'a' },
+              { questionId: 'q2', answer: 'true' },
+            ],
+          },
+        ],
+      };
+      mockExternalSubmissionRepo.find.mockResolvedValue([external]);
+      mockExternalSubmissionRepo.findOne.mockResolvedValue(external);
 
-      const result = await service.listResults('emp-1', 'ass-1', {});
+      const result = await service.getResultDetail('emp-1', 'ass-1', 'e1');
 
-      expect(result.emptyState).toContain('No submissions yet');
+      expect(result.questions.map((q) => q.questionId)).toEqual(['q1', 'q2']);
+      expect(result.questions.map((q) => q.isCorrect)).toEqual([true, false]);
+      expect(result.correctCount).toBe(1);
+      expect(result.questionCount).toBe(2);
+    });
+
+    it('should 404 when the submission is not on this assessment', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockAssessmentRepo.findOne.mockResolvedValue({
+        id: 'ass-1',
+        employer_user_id: 'emp-1',
+        questions: [],
+      });
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([]);
+
+      await expect(
+        service.getResultDetail('emp-1', 'ass-1', 'nope'),
+      ).rejects.toThrow('Submission not found');
     });
   });
 

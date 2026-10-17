@@ -31,6 +31,7 @@ import {
   ApiGetPublicAssessment,
   ApiImportAssessmentQuestions,
   ApiListCredlaneCatalogue,
+  ApiGetEmployerAssessmentResultDetail,
   ApiListEmployerAssessmentResults,
   ApiListEmployerAssessments,
   ApiSearchAssessmentCandidates,
@@ -239,6 +240,21 @@ export class EmployerAssessmentsController {
       employerUserId,
       assessmentId,
       query,
+    );
+  }
+
+  @Get('employer/assessments/:assessmentId/results/:submissionId')
+  @Roles(UserRole.EMPLOYER)
+  @ApiGetEmployerAssessmentResultDetail()
+  getResultDetail(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('assessmentId', ParseUUIDPipe) assessmentId: string,
+    @Param('submissionId', ParseUUIDPipe) submissionId: string,
+  ) {
+    return this.employerAssessmentsService.getResultDetail(
+      employerUserId,
+      assessmentId,
+      submissionId,
     );
   }
 
