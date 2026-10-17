@@ -1129,28 +1129,36 @@ export class EmployerAssessmentsService {
       integrity_level: integrity.level,
     } as Partial<EmployerAssessmentExternalSubmission>);
 
-    await this.notificationDispatch.dispatch(
-      NotificationType.ASSESSMENT_COMPLETED,
-      assessment.employer_user_id,
-      {
-        assessment_id: assessment.id,
-        submission_id: submission.id,
-        external_applicant_id: applicant.id,
-        email: applicant.email,
-        score,
-        passed,
-      },
-    );
+    // The submission is saved; telling the employer is best effort.
+    try {
+      await this.notificationDispatch.dispatch(
+        NotificationType.ASSESSMENT_COMPLETED,
+        assessment.employer_user_id,
+        {
+          assessment_id: assessment.id,
+          submission_id: submission.id,
+          external_applicant_id: applicant.id,
+          email: applicant.email,
+          score,
+          passed,
+        },
+      );
 
-    const employer = await this.userRepo.findOne({
-      where: { id: assessment.employer_user_id },
-    });
-    if (employer) {
-      await this.mailService.send({
-        to: employer.email,
-        subject: `External assessment completed: ${assessment.title}`,
-        text: `${applicant.email} completed ${assessment.title}. Score: ${score}%. Result: ${passed ? 'pass' : 'fail'}. Log in to review the submission.`,
+      const employer = await this.userRepo.findOne({
+        where: { id: assessment.employer_user_id },
       });
+      if (employer) {
+        await this.mailService.send({
+          to: employer.email,
+          subject: `External assessment completed: ${assessment.title}`,
+          text: `${applicant.email} completed ${assessment.title}. Score: ${score}%. Result: ${passed ? 'pass' : 'fail'}. Log in to review the submission.`,
+        });
+      }
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to notify employer about external submission ${submission.id}`,
+        error instanceof Error ? error.stack : String(error),
+      );
     }
 
     return {
