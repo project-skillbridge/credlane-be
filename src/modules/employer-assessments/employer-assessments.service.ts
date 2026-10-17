@@ -35,7 +35,7 @@ import { MailService } from '../mail/mail.service';
 import { NotificationDispatchService } from '../notifications/notification-dispatch.service';
 import { NotificationType } from '../notifications/notification-type.enum';
 import { Offer, OfferStatus } from '../offers/entities/offer.entity';
-import { User } from '../users/entities/user.entity';
+import { User, UserRole } from '../users/entities/user.entity';
 import {
   CreateEmployerAssessmentDto,
   EmployerAssessmentQuestionInputDto,
@@ -85,6 +85,8 @@ export type AssessmentResultRow = {
   /** Clean, needs review or flagged; null when nothing was recorded. */
   integrityLevel: IntegrityLevel | null;
   integrityReasons: string[];
+  /** Set when a link taker later made a verified SkillSift account with the same email. */
+  joinedSkillsiftUserId: string | null;
   /** 1-based rank by score across every submission; ties share a rank. */
   rank: number;
   /** Share of the other candidates this one outscored; null under 3 submissions. */
@@ -1492,6 +1494,24 @@ export class EmployerAssessmentsService {
       }),
     ]);
 
+    // Matched on verified email only, so nobody can claim a result by typing
+    // someone else's address into a signup form.
+    const takerEmails = external
+      .map((submission) => submission.external_applicant?.email?.toLowerCase())
+      .filter((email): email is string => !!email);
+    const joined = takerEmails.length
+      ? await this.userRepo
+          .createQueryBuilder('user')
+          .select(['user.id', 'user.email'])
+          .where('LOWER(user.email) IN (:...takerEmails)', { takerEmails })
+          .andWhere('user.is_verified = true')
+          .andWhere('user.role = :role', { role: UserRole.TALENT })
+          .getMany()
+      : [];
+    const joinedByEmail = new Map(
+      joined.map((user) => [user.email.toLowerCase(), user.id]),
+    );
+
     const rows: Omit<AssessmentResultRow, 'rank' | 'percentile'>[] = [
       ...internal.map((submission) => ({
         id: submission.id,
@@ -1510,6 +1530,7 @@ export class EmployerAssessmentsService {
         deliveryMode: submission.delivery_mode,
         integrityLevel: submission.integrity_level ?? null,
         integrityReasons: submission.integrity?.reasons ?? [],
+        joinedSkillsiftUserId: null,
       })),
       ...external.map((submission) => ({
         id: submission.id,
@@ -1524,6 +1545,10 @@ export class EmployerAssessmentsService {
         deliveryMode: 'link',
         integrityLevel: submission.integrity_level ?? null,
         integrityReasons: submission.integrity?.reasons ?? [],
+        joinedSkillsiftUserId:
+          joinedByEmail.get(
+            (submission.external_applicant?.email ?? '').toLowerCase(),
+          ) ?? null,
       })),
     ];
 

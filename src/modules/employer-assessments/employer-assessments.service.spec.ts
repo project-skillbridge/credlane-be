@@ -83,9 +83,17 @@ describe('EmployerAssessmentsService', () => {
     createQueryBuilder: jest.fn(),
   };
 
+  const mockUserQb = {
+    select: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue([]),
+  };
+
   const mockUserRepo = {
     findOne: jest.fn(),
     findBy: jest.fn(),
+    createQueryBuilder: jest.fn().mockReturnValue(mockUserQb),
   };
 
   const mockEmployerRoleRepo = {
@@ -999,6 +1007,29 @@ describe('EmployerAssessmentsService', () => {
       passed,
       external_applicant: { email: `${id}@mail.com` },
       submitted_at: new Date('2026-01-03T00:00:00Z'),
+    });
+
+    it('marks link takers who joined SkillSift with a verified account', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([
+        externalSubmission('joined', 80, true),
+        externalSubmission('guest', 50, false),
+      ]);
+      mockUserQb.getMany.mockResolvedValueOnce([
+        { id: 'user-9', email: 'Joined@Mail.com' },
+      ]);
+
+      const result = await service.listResults('emp-1', 'ass-1', {});
+
+      const byEmail = Object.fromEntries(
+        result.submissions.map((r) => [r.email, r.joinedSkillsiftUserId]),
+      );
+      expect(byEmail['joined@mail.com']).toBe('user-9');
+      expect(byEmail['guest@mail.com']).toBeNull();
+      expect(mockUserQb.andWhere).toHaveBeenCalledWith(
+        'user.is_verified = true',
+      );
     });
 
     it('should return results filtered by pass/fail status', async () => {
