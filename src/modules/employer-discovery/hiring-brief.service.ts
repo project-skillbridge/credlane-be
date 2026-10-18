@@ -64,7 +64,28 @@ export class HiringBriefService {
       where: { user_id: candidateUserId },
     });
     if (!profile) return { status: 'no_assessment' };
+    return this.resolve(profile);
+  }
 
+  /**
+   * Starts writing the brief right after a talent finishes the job
+   * evaluation, so it is ready before an employer ever opens the profile.
+   * Never throws: a failure here only means the brief is written on first view.
+   */
+  async warm(talentProfileId: string): Promise<void> {
+    try {
+      const profile = await this.profileRepo.findOne({
+        where: { id: talentProfileId },
+      });
+      if (profile) await this.resolve(profile);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Could not pre-generate hiring brief for profile=${talentProfileId}: ${String(error)}`,
+      );
+    }
+  }
+
+  private async resolve(profile: TalentProfile): Promise<HiringBriefResponse> {
     const [skill, advanced] = await Promise.all([
       this.latestResult(profile.id, AssessmentType.SKILL),
       this.latestResult(profile.id, AssessmentType.ADVANCED),

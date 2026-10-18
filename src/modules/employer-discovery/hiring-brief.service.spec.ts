@@ -75,6 +75,20 @@ describe('HiringBriefService', () => {
     expect(generator.generate).not.toHaveBeenCalled();
   });
 
+  it('warm() writes the brief for a profile id and never throws', async () => {
+    const { service, generator, briefRepo } = setup();
+    await service.warm('p1');
+    await flush();
+    expect(generator.generate).toHaveBeenCalledTimes(1);
+    expect(briefRepo.upsert).toHaveBeenCalled();
+
+    const failing = setup();
+    (
+      failing.service as never as { profileRepo: { findOne: jest.Mock } }
+    ).profileRepo.findOne.mockRejectedValue(new Error('db down'));
+    await expect(failing.service.warm('p1')).resolves.toBeUndefined();
+  });
+
   it('starts generation once and stores the brief', async () => {
     const { service, generator, briefRepo } = setup();
     await expect(service.getBrief('u1')).resolves.toEqual({
