@@ -457,6 +457,7 @@ describe('AdvancedAssessmentService', () => {
       guidanceReport as never,
       employerPoolProfileService as never,
       { warm: jest.fn().mockResolvedValue(undefined) } as never,
+      { notifyForCandidate: jest.fn().mockResolvedValue(undefined) } as never,
       questionGeneration as never,
       usersService as never,
       notificationDispatch as never,
