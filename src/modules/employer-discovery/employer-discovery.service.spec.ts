@@ -16,9 +16,11 @@ import { EmployerProfile } from '../employer/entities/employer-profile.entity';
 describe('EmployerDiscoveryService', () => {
   let service: EmployerDiscoveryService;
 
+  const mockFinishedEvaluationQuery = jest.fn();
   const mockPoolProfileRepo = {
     createQueryBuilder: jest.fn(),
     findOne: jest.fn(),
+    manager: { query: mockFinishedEvaluationQuery },
   };
 
   const mockSavedCandidateRepo = {
@@ -63,6 +65,9 @@ describe('EmployerDiscoveryService', () => {
   };
 
   beforeEach(async () => {
+    // By default the candidate has finished the job evaluation.
+    mockFinishedEvaluationQuery.mockReset();
+    mockFinishedEvaluationQuery.mockResolvedValue([{ ok: 1 }]);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EmployerDiscoveryService,
@@ -138,6 +143,39 @@ describe('EmployerDiscoveryService', () => {
       .mockResolvedValue(savedIds.map((id) => ({ s_candidate_user_id: id }))),
   });
 
+  describe('talent who has not finished the job evaluation', () => {
+    beforeEach(() => {
+      mockFinishedEvaluationQuery.mockResolvedValue([]);
+      mockPoolProfileRepo.findOne.mockResolvedValue({
+        id: 'pool-1',
+        tier: 'job_ready',
+        talent_profile_id: 'tp-1',
+        talent_profile: { id: 'tp-1' },
+      });
+    });
+
+    it('cannot be opened by an employer', async () => {
+      await expect(
+        service.getCandidateProfile('emp-1', 'cand-1'),
+      ).rejects.toThrow(NotFoundError);
+    });
+
+    it('cannot be shortlisted', async () => {
+      await expect(service.saveCandidate('emp-1', 'cand-1')).rejects.toThrow(
+        NotFoundError,
+      );
+    });
+
+    it('cannot be unlocked or contacted', async () => {
+      await expect(service.unlockCandidate('emp-1', 'cand-1')).rejects.toThrow(
+        NotFoundError,
+      );
+      await expect(
+        service.contactCandidate('emp-1', 'cand-1', 'hi'),
+      ).rejects.toThrow(NotFoundError);
+    });
+  });
+
   describe('getCandidateProfile', () => {
     it('should return verified profile with employer context for job_ready candidate', async () => {
       mockVerifiedProfileService.getForEmployerView.mockResolvedValue({
@@ -193,6 +231,7 @@ describe('EmployerDiscoveryService', () => {
     it('should reveal the full profile once the employer has unlocked it', async () => {
       mockBillingService.isUnlocked.mockResolvedValue(true);
       mockPoolProfileRepo.findOne.mockResolvedValue({
+        talent_profile_id: 'tp-1',
         talent_profile: {
           personal_website: 'https://jane.dev',
           linkedin_url: 'https://linkedin.com/in/jane',
@@ -247,7 +286,12 @@ describe('EmployerDiscoveryService', () => {
 
   describe('saveCandidate', () => {
     it('should save a job_ready candidate', async () => {
-      const pool = { id: 'pool-1', candidate_id: 'user-1', tier: 'job_ready' };
+      const pool = {
+        id: 'pool-1',
+        candidate_id: 'user-1',
+        talent_profile_id: 'tp-1',
+        tier: 'job_ready',
+      };
       mockPoolProfileRepo.findOne.mockResolvedValue(pool);
       mockSavedCandidateRepo.save.mockResolvedValue({ id: 'saved-1' });
 
@@ -267,7 +311,12 @@ describe('EmployerDiscoveryService', () => {
     });
 
     it('should throw ConflictError if already saved', async () => {
-      const pool = { id: 'pool-1', candidate_id: 'user-1', tier: 'job_ready' };
+      const pool = {
+        id: 'pool-1',
+        candidate_id: 'user-1',
+        talent_profile_id: 'tp-1',
+        tier: 'job_ready',
+      };
       mockPoolProfileRepo.findOne.mockResolvedValue(pool);
       const duplicateError = Object.assign(new Error('duplicate'), {
         code: '23505',
@@ -280,7 +329,12 @@ describe('EmployerDiscoveryService', () => {
     });
 
     it('should throw ForbiddenError if candidate not job_ready', async () => {
-      const pool = { id: 'pool-1', candidate_id: 'user-1', tier: 'emerging' };
+      const pool = {
+        id: 'pool-1',
+        candidate_id: 'user-1',
+        talent_profile_id: 'tp-1',
+        tier: 'emerging',
+      };
       mockPoolProfileRepo.findOne.mockResolvedValue(pool);
 
       await expect(
@@ -323,7 +377,12 @@ describe('EmployerDiscoveryService', () => {
     });
 
     it('should create contact request and trigger notification', async () => {
-      const pool = { id: 'pool-1', candidate_id: 'user-1', tier: 'job_ready' };
+      const pool = {
+        id: 'pool-1',
+        candidate_id: 'user-1',
+        talent_profile_id: 'tp-1',
+        tier: 'job_ready',
+      };
       mockPoolProfileRepo.findOne.mockResolvedValue(pool);
       mockContactRequestRepo.save.mockResolvedValue({ id: 'contact-1' });
       mockUserRepo.findOne.mockResolvedValue({
@@ -348,6 +407,7 @@ describe('EmployerDiscoveryService', () => {
       const pool = {
         id: 'pool-1',
         candidate_id: 'user-1',
+        talent_profile_id: 'tp-1',
         tier: 'not_ready',
       };
       mockPoolProfileRepo.findOne.mockResolvedValue(pool);
@@ -358,7 +418,12 @@ describe('EmployerDiscoveryService', () => {
     });
 
     it('should succeed even if notification dispatch throws', async () => {
-      const pool = { id: 'pool-1', candidate_id: 'user-1', tier: 'job_ready' };
+      const pool = {
+        id: 'pool-1',
+        candidate_id: 'user-1',
+        talent_profile_id: 'tp-1',
+        tier: 'job_ready',
+      };
       mockPoolProfileRepo.findOne.mockResolvedValue(pool);
       mockContactRequestRepo.save.mockResolvedValue({ id: 'contact-1' });
       mockUserRepo.findOne.mockResolvedValue({

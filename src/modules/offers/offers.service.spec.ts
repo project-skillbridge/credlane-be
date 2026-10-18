@@ -32,8 +32,10 @@ describe('OffersService', () => {
     count: jest.fn(),
   };
 
+  const mockFinishedEvaluationQuery = jest.fn();
   const mockPoolProfileRepo = {
     findOne: jest.fn(),
+    manager: { query: mockFinishedEvaluationQuery },
   };
 
   const mockUserRepo = {
@@ -65,6 +67,8 @@ describe('OffersService', () => {
   };
 
   beforeEach(async () => {
+    mockFinishedEvaluationQuery.mockReset();
+    mockFinishedEvaluationQuery.mockResolvedValue([{ ok: 1 }]);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OffersService,

@@ -325,6 +325,21 @@ export class OffersService {
       );
     }
 
+    // Talent only exist for employers once they finished the job evaluation.
+    const finished: unknown[] = await this.poolProfileRepo.manager.query(
+      `SELECT 1 FROM assessment_attempts att
+       INNER JOIN assessment_results res ON res.attempt_id = att.id
+       WHERE att.talent_profile_id = $1
+         AND att.assessment_type = 'advanced'
+         AND att.completed_at IS NOT NULL
+         AND res.tier = 'job_ready'
+       LIMIT 1`,
+      [poolProfile.talent_profile_id],
+    );
+    if (finished.length === 0) {
+      throw new NotFoundError('Candidate not found');
+    }
+
     // Validate candidate matches the track
     if (poolProfile.track !== role?.track) {
       throw new ForbiddenError(

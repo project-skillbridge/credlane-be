@@ -46,6 +46,20 @@ type CandidateOfferStatusRow = {
   offer_status: OfferStatus.PENDING | OfferStatus.ACCEPTED;
 };
 
+/**
+ * A talent only exists for employers once they have finished the job
+ * evaluation (the advanced assessment) and landed in the job-ready tier.
+ * Seeded or imported pool rows without that history stay hidden.
+ */
+const FINISHED_JOB_EVALUATION_SQL = `EXISTS (
+  SELECT 1 FROM assessment_attempts att
+  INNER JOIN assessment_results res ON res.attempt_id = att.id
+  WHERE att.talent_profile_id = pool.talent_profile_id
+    AND att.assessment_type = 'advanced'
+    AND att.completed_at IS NOT NULL
+    AND res.tier = 'job_ready'
+)`;
+
 @Injectable()
 export class EmployerDiscoveryService {
   private readonly logger = new Logger(EmployerDiscoveryService.name);
@@ -101,6 +115,7 @@ export class EmployerDiscoveryService {
       .innerJoin(User, 'u', 'u.id = pool.candidate_id')
       .innerJoin('talent_profiles', 'tp', 'tp.id = pool.talent_profile_id')
       .where('pool.tier = :tier', { tier: 'job_ready' })
+      .andWhere(FINISHED_JOB_EVALUATION_SQL)
       .andWhere(
         '(pool.job_search_status IS NULL OR pool.job_search_status != :notLooking)',
         { notLooking: 'not_looking' },
@@ -162,17 +177,24 @@ export class EmployerDiscoveryService {
     employerUserId: string,
     candidateUserId: string,
   ): Promise<EmployerCandidateProfileResponseDto> {
-    const [profile, savedMap, offerStatusMap, hasUnlock, poolProfile] =
-      await Promise.all([
-        this.verifiedProfileService.getForEmployerView(candidateUserId),
-        this.getSavedMap(employerUserId, [candidateUserId]),
-        this.getOfferStatusMap(employerUserId, [candidateUserId]),
-        this.billingService.isUnlocked(employerUserId, candidateUserId),
-        this.poolProfileRepo.findOne({
-          where: { candidate_id: candidateUserId },
-          relations: ['talent_profile'],
-        }),
-      ]);
+    const poolProfile = await this.poolProfileRepo.findOne({
+      where: { candidate_id: candidateUserId },
+      relations: ['talent_profile'],
+    });
+    if (
+      !(await this.hasFinishedJobEvaluation(poolProfile?.talent_profile_id))
+    ) {
+      throw new NotFoundError(
+        'Verified profile is only available for job-ready talents who have completed the advanced assessment',
+      );
+    }
+
+    const [profile, savedMap, offerStatusMap, hasUnlock] = await Promise.all([
+      this.verifiedProfileService.getForEmployerView(candidateUserId),
+      this.getSavedMap(employerUserId, [candidateUserId]),
+      this.getOfferStatusMap(employerUserId, [candidateUserId]),
+      this.billingService.isUnlocked(employerUserId, candidateUserId),
+    ]);
 
     // A candidate who accepted this employer's invite has chosen to share
     // their details, so it counts as unlocked at no cost.
@@ -214,6 +236,24 @@ export class EmployerDiscoveryService {
     };
   }
 
+  /** True once the talent has completed the job evaluation as job ready. */
+  private async hasFinishedJobEvaluation(
+    talentProfileId: string | null | undefined,
+  ): Promise<boolean> {
+    if (!talentProfileId) return false;
+    const rows: unknown[] = await this.poolProfileRepo.manager.query(
+      `SELECT 1 FROM assessment_attempts att
+       INNER JOIN assessment_results res ON res.attempt_id = att.id
+       WHERE att.talent_profile_id = $1
+         AND att.assessment_type = 'advanced'
+         AND att.completed_at IS NOT NULL
+         AND res.tier = 'job_ready'
+       LIMIT 1`,
+      [talentProfileId],
+    );
+    return rows.length > 0;
+  }
+
   /** Unlocked by the employer, or revealed because the talent accepted an invite. */
   private async getRevealedIds(
     employerUserId: string,
@@ -240,7 +280,11 @@ export class EmployerDiscoveryService {
     const poolProfile = await this.poolProfileRepo.findOne({
       where: { candidate_id: candidateUserId },
     });
-    if (!poolProfile || poolProfile.tier !== 'job_ready') {
+    if (
+      !poolProfile ||
+      poolProfile.tier !== 'job_ready' ||
+      !(await this.hasFinishedJobEvaluation(poolProfile.talent_profile_id))
+    ) {
       throw new NotFoundError('Candidate not found');
     }
 
@@ -256,7 +300,10 @@ export class EmployerDiscoveryService {
       where: { candidate_id: candidateUserId },
     });
 
-    if (!poolProfile) {
+    if (
+      !poolProfile ||
+      !(await this.hasFinishedJobEvaluation(poolProfile.talent_profile_id))
+    ) {
       throw new NotFoundError('Candidate not found');
     }
 
@@ -319,7 +366,8 @@ export class EmployerDiscoveryService {
       .innerJoin(User, 'u', 'u.id = saved.candidate_user_id')
       .innerJoin('talent_profiles', 'tp', 'tp.id = pool.talent_profile_id')
       .where('saved.employer_user_id = :employerUserId', { employerUserId })
-      .andWhere('pool.tier = :tier', { tier: 'job_ready' });
+      .andWhere('pool.tier = :tier', { tier: 'job_ready' })
+      .andWhere(FINISHED_JOB_EVALUATION_SQL);
 
     this.selectDiscoveryColumns(qb, {
       includeNotes: true,
@@ -382,7 +430,10 @@ export class EmployerDiscoveryService {
       where: { candidate_id: candidateUserId },
     });
 
-    if (!poolProfile) {
+    if (
+      !poolProfile ||
+      !(await this.hasFinishedJobEvaluation(poolProfile.talent_profile_id))
+    ) {
       throw new NotFoundError('Candidate not found');
     }
 
