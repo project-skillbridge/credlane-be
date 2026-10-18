@@ -32,4 +32,16 @@ export class EmployerCandidateProfileResponseDto extends VerifiedProfileResponse
 
   @ApiProperty({ nullable: true, description: 'Only when unlocked' })
   linkedin_url: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Talent role track, e.g. frontend_developer',
+  })
+  role_track: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'Validated level: junior, mid, senior or expert',
+  })
+  validated_level: string | null;
 }

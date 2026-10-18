@@ -205,6 +205,8 @@ export class EmployerDiscoveryService {
       linkedin_url: isUnlocked
         ? (poolProfile?.talent_profile?.linkedin_url ?? null)
         : null,
+      role_track: poolProfile?.talent_profile?.track ?? null,
+      validated_level: poolProfile?.talent_profile?.validated_level ?? null,
       user_id: candidateUserId,
       is_saved: savedMap.has(candidateUserId),
       offer_sent: offerStatusMap.has(candidateUserId),
