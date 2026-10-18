@@ -127,6 +127,9 @@ export class PublicEmployerAssessmentResponseDto {
   @ApiProperty({ nullable: true })
   employer_name: string | null;
 
+  @ApiProperty({ nullable: true })
+  welcome_message: string | null;
+
   @ApiProperty({ type: [PublicEmployerAssessmentQuestionResponseDto] })
   questions: PublicEmployerAssessmentQuestionResponseDto[];
 }

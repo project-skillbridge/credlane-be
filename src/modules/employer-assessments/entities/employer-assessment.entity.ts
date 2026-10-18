@@ -75,6 +75,10 @@ export class EmployerAssessment {
   @Column({ type: 'integer' })
   time_limit_minutes: number;
 
+  @ApiProperty({ nullable: true })
+  @Column({ type: 'text', nullable: true })
+  welcome_message: string | null;
+
   @ApiProperty()
   @Column({ type: 'integer' })
   passing_threshold: number;

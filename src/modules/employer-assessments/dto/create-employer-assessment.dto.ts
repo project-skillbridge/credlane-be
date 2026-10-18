@@ -9,6 +9,7 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
   Matches,
@@ -78,6 +79,16 @@ export class CreateEmployerAssessmentDto {
   @IsInt()
   @IsIn([20, 30, 40, 60])
   timeLimitMinutes: number;
+
+  @ApiProperty({
+    required: false,
+    maxLength: 500,
+    description: 'Short note shown to takers before they start.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  welcomeMessage?: string;
 
   @ApiProperty({ minimum: 50, maximum: 90 })
   @Type(() => Number)

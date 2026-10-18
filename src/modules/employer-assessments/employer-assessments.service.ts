@@ -308,6 +308,7 @@ export class EmployerAssessmentsService {
           role_track: dto.roleTrack.trim(),
           experience_level: dto.experienceLevel,
           time_limit_minutes: dto.timeLimitMinutes,
+          welcome_message: dto.welcomeMessage?.trim() || null,
           passing_threshold: dto.passingThreshold,
           question_source: dto.questionSource,
           credlane_assessment_id:
@@ -1036,6 +1037,7 @@ export class EmployerAssessmentsService {
       title: assessment.title,
       type: assessment.type,
       employer_name: profile?.company_name ?? null,
+      welcome_message: assessment.welcome_message,
       role_track: assessment.role_track,
       experience_level: assessment.experience_level,
       time_limit_minutes: assessment.time_limit_minutes,
@@ -1055,6 +1057,7 @@ export class EmployerAssessmentsService {
     title: string;
     employer_name: string | null;
     employer_logo_url: string | null;
+    welcome_message: string | null;
     modules: Array<Record<string, unknown>>;
     deadline: null;
     is_expired: boolean;
@@ -1087,6 +1090,7 @@ export class EmployerAssessmentsService {
         }`.trim() ??
         null,
       employer_logo_url: assessment.employer?.avatar_url ?? null,
+      welcome_message: assessment.welcome_message,
       modules: [
         {
           id: assessment.id,
