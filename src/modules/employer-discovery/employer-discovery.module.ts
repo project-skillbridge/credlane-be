@@ -8,6 +8,10 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { EmployerBillingModule } from '../employer-billing/employer-billing.module';
 import { EmployerModule } from '../employer/employer.module';
 import { VerifiedProfileModule } from '../verified-profile/verified-profile.module';
+import { AssessmentResult } from '../assessments/entities';
+import { TalentProfile } from '../talent/entities/talent-profile.entity';
+import { CandidateHiringBrief } from './entities/candidate-hiring-brief.entity';
+import { HiringBriefService } from './hiring-brief.service';
 import { EmployerContactRequest } from './entities/employer-contact-request.entity';
 import { EmployerSavedCandidate } from './entities/employer-saved-candidate.entity';
 import { EmployerDiscoveryController } from './employer-discovery.controller';
@@ -22,6 +26,9 @@ import { EmployerDiscoveryService } from './employer-discovery.service';
       EmployerContactRequest,
       User,
       Offer,
+      TalentProfile,
+      AssessmentResult,
+      CandidateHiringBrief,
     ]),
     NotificationsModule,
     EmployerModule,
@@ -29,7 +36,7 @@ import { EmployerDiscoveryService } from './employer-discovery.service';
     EmployerBillingModule,
   ],
   controllers: [EmployerDiscoveryController],
-  providers: [EmployerDiscoveryService],
+  providers: [EmployerDiscoveryService, HiringBriefService],
   exports: [EmployerDiscoveryService],
 })
 export class EmployerDiscoveryModule {}

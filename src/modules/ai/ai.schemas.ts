@@ -124,3 +124,37 @@ export const aiResourcesPayloadSchema = z.object({
   resources: z.array(generatedArticleItemSchema).min(3).max(20),
   videos: z.array(generatedVideoItemSchema).min(3).max(20),
 });
+
+const briefSource = z.enum(['skills', 'job_ready', 'open_ended']);
+
+export const hiringBriefSchema = z.object({
+  headline: z.string().min(1),
+  hire_case: z.string().min(1),
+  strengths: z.array(
+    z.object({
+      title: z.string().min(1),
+      evidence: z.string().min(1),
+      source: briefSource,
+    }),
+  ),
+  gaps: z.array(
+    z.object({
+      title: z.string().min(1),
+      evidence: z.string().min(1),
+      source: briefSource,
+      severity: z.enum(['minor', 'moderate', 'significant']),
+    }),
+  ),
+  open_ended: z.array(
+    z.object({
+      topic: z.string().min(1),
+      quality: z.enum(['strong', 'solid', 'basic', 'weak']),
+      takeaway: z.string().min(1),
+    }),
+  ),
+  interview_questions: z.array(z.string().min(1)).min(1),
+  confidence: z.enum(['high', 'medium', 'low']),
+  confidence_note: z.string().min(1),
+});
+
+export type HiringBrief = z.infer<typeof hiringBriefSchema>;

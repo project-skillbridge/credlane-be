@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AiUsageLog } from './ai-usage-log.entity';
+import { HiringBriefGeneratorService } from './hiring-brief.service';
 import { GuidanceReportService } from './guidance-report.service';
 import { Lt3GenerationService } from './lt3-generation.service';
 import { OpenRouterService } from './openrouter.service';
@@ -18,6 +19,7 @@ import { UrlResolutionService } from './url-resolution.service';
     QuestionGenerationService,
     Lt3GenerationService,
     GuidanceReportService,
+    HiringBriefGeneratorService,
     ResourceGenerationService,
     UrlResolutionService,
   ],
@@ -27,6 +29,7 @@ import { UrlResolutionService } from './url-resolution.service';
     QuestionGenerationService,
     Lt3GenerationService,
     GuidanceReportService,
+    HiringBriefGeneratorService,
     ResourceGenerationService,
     UrlResolutionService,
   ],
