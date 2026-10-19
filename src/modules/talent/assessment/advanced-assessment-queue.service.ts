@@ -14,6 +14,9 @@ import {
 
 const QUEUE_NAME = 'advanced-assessment-submit';
 const JOB_NAME = 'process-submit';
+/** Scoring depends on the AI service, so retry transient failures with backoff. */
+const SCORING_ATTEMPTS = 5;
+const SCORING_BACKOFF_MS = 60_000;
 
 @Injectable()
 export class AdvancedAssessmentQueueService
@@ -62,6 +65,17 @@ export class AdvancedAssessmentQueueService
         `Advanced assessment submit job ${job?.id} failed`,
         err instanceof Error ? err.stack : err,
       );
+      const attempts = job?.opts.attempts ?? 1;
+      if (job && job.attemptsMade >= attempts) {
+        void this.submitProcessor
+          .onFinalFailure(job.data as AdvancedAssessmentSubmitJobData)
+          .catch((e: unknown) =>
+            this.logger.error(
+              `Could not release retake lock for job ${job.id}`,
+              e instanceof Error ? e.stack : e,
+            ),
+          );
+      }
     });
   }
 
@@ -78,6 +92,8 @@ export class AdvancedAssessmentQueueService
               'Inline advanced-assessment submit failed',
               err instanceof Error ? err.stack : err,
             );
+            // No queue means no retries, so this failure is final.
+            await this.submitProcessor.onFinalFailure(payload).catch(() => {});
           } finally {
             this.inlinePending--;
             this.flushInlineWaiters();
@@ -100,6 +116,8 @@ export class AdvancedAssessmentQueueService
     try {
       await this.queue!.add(JOB_NAME, payload, {
         jobId: payload.sessionId,
+        attempts: SCORING_ATTEMPTS,
+        backoff: { type: 'exponential', delay: SCORING_BACKOFF_MS },
         removeOnComplete: true,
         removeOnFail: false,
       });

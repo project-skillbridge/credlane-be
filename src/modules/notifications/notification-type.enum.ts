@@ -20,9 +20,13 @@ export enum NotificationType {
   INTERVIEW_DECLINED = 'interview_declined',
   CALL_REQUESTED = 'call_requested',
   ASSESSMENT_COMPLETED = 'assessment_completed',
+  SKILL_ASSESSMENT_READY = 'skill_assessment_ready',
+  SKILL_ASSESSMENT_PASSED = 'skill_assessment_passed',
+  SKILL_ASSESSMENT_FAILED = 'skill_assessment_failed',
 }
 
 export const NOTIFICATION_TYPE_VALUES = [
+  NotificationType.SKILL_ASSESSMENT_READY,
   NotificationType.ADVANCED_ASSESSMENT_SCORE_READY,
   NotificationType.ADVANCED_RETAKE_AVAILABLE,
   NotificationType.OFFER_RECEIVED,

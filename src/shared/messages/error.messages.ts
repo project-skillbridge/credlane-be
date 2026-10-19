@@ -44,10 +44,12 @@ export const ErrorMessages = {
     TRACK_MISSING:
       'track is required to start a skill assessment; please complete onboarding track step first',
     NO_QUESTIONS_AVAILABLE:
-      'No skill assessment questions are currently available for your track and level',
+      'Your next attempt is not open yet. We will notify you when you can retake it.',
     ATTEMPT_NOT_FOUND: 'Assessment attempt not found',
     ATTEMPT_ALREADY_SUBMITTED:
       'This assessment attempt has already been submitted',
+    TIME_EXPIRED:
+      'The time limit for this skill assessment ran out before it was submitted. This attempt has been used.',
     ATTEMPT_CORRUPT:
       'Assessment attempt has no questions; please start a new session',
     PASS_REQUIRED:
@@ -67,7 +69,8 @@ export const ErrorMessages = {
     SKILL_GATE_REQUIRED:
       'Complete the skill assessment before starting the advanced assessment',
     LEVEL_NOT_VERIFIED: 'LEVEL_NOT_VERIFIED',
-    BANK_EXHAUSTED: 'BANK_EXHAUSTED',
+    BANK_EXHAUSTED:
+      'Your next attempt is not open yet. We will notify you when you can retake it.',
     ACTIVE_SESSION_EXISTS: 'Active advanced assessment session already exists',
     SESSION_NOT_FOUND: 'Advanced assessment session not found',
     SESSION_CORRUPT: 'Advanced assessment session has no questions',

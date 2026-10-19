@@ -23,6 +23,15 @@ export type AdvancedScoreReadyPayload = {
   tier: AssessmentTier;
 };
 
+export type SkillAssessmentResultPayload = {
+  /** Validated level on a pass; the level the talent tried on a fail. */
+  level: string;
+  track: string;
+  percentage: number;
+  certificateCode?: string;
+  retakeAvailable: boolean;
+};
+
 export type AdvancedRetakeAvailablePayload = {
   eligibilityDate: string;
 };
@@ -167,6 +176,32 @@ export class NotificationDispatchService
     return this.dispatch(NotificationType.OFFER_DECLINED, userId, payload);
   }
 
+  async notifySkillAssessmentPassed(
+    userId: string,
+    payload: SkillAssessmentResultPayload,
+  ): Promise<void> {
+    return this.dispatch(
+      NotificationType.SKILL_ASSESSMENT_PASSED,
+      userId,
+      payload,
+    );
+  }
+
+  async notifySkillAssessmentFailed(
+    userId: string,
+    payload: SkillAssessmentResultPayload,
+  ): Promise<void> {
+    return this.dispatch(
+      NotificationType.SKILL_ASSESSMENT_FAILED,
+      userId,
+      payload,
+    );
+  }
+
+  async notifySkillAssessmentReady(userId: string): Promise<void> {
+    return this.dispatch(NotificationType.SKILL_ASSESSMENT_READY, userId, {});
+  }
+
   async notifyAssessmentUnlocked(
     userId: string,
     payload: AssessmentUnlockedPayload,
@@ -255,6 +290,18 @@ export class NotificationDispatchService
     payload: OfferExpiredPayload,
   ): Promise<void>;
   async dispatch(
+    type: NotificationType.SKILL_ASSESSMENT_READY,
+    userId: string,
+    payload: Record<string, never>,
+  ): Promise<void>;
+  async dispatch(
+    type:
+      | NotificationType.SKILL_ASSESSMENT_PASSED
+      | NotificationType.SKILL_ASSESSMENT_FAILED,
+    userId: string,
+    payload: SkillAssessmentResultPayload,
+  ): Promise<void>;
+  async dispatch(
     type: NotificationType.ASSESSMENT_UNLOCKED,
     userId: string,
     payload: AssessmentUnlockedPayload,
@@ -287,7 +334,9 @@ export class NotificationDispatchService
     payload: AssessmentReceivedPayload,
   ): Promise<void>;
   async dispatch(
-    type: NotificationType.CALL_REQUESTED | NotificationType.ASSESSMENT_COMPLETED,
+    type:
+      | NotificationType.CALL_REQUESTED
+      | NotificationType.ASSESSMENT_COMPLETED,
     userId: string,
     payload: CallRequestedPayload | Record<string, unknown>,
   ): Promise<void>;
@@ -350,6 +399,17 @@ export class NotificationDispatchService
             payload as OfferExpiredPayload,
           );
           break;
+        case NotificationType.SKILL_ASSESSMENT_READY:
+          await this.dispatchSkillAssessmentReady(userId);
+          break;
+        case NotificationType.SKILL_ASSESSMENT_PASSED:
+        case NotificationType.SKILL_ASSESSMENT_FAILED:
+          await this.dispatchSkillAssessmentResult(
+            type,
+            userId,
+            payload as SkillAssessmentResultPayload,
+          );
+          break;
         case NotificationType.ASSESSMENT_UNLOCKED:
           await this.dispatchAssessmentUnlocked(
             userId,
@@ -389,12 +449,7 @@ export class NotificationDispatchService
           );
           break;
         case NotificationType.CALL_REQUESTED:
-          await this.dispatchGeneric(
-            type,
-            userId,
-            'Call requested',
-            payload,
-          );
+          await this.dispatchGeneric(type, userId, 'Call requested', payload);
           break;
         case NotificationType.ASSESSMENT_COMPLETED:
           await this.dispatchGeneric(
@@ -745,6 +800,56 @@ export class NotificationDispatchService
         candidate_name: payload.candidateName,
         role_title: payload.roleTitle,
       },
+    });
+  }
+
+  private async dispatchSkillAssessmentResult(
+    type: NotificationType,
+    userId: string,
+    payload: SkillAssessmentResultPayload,
+  ): Promise<void> {
+    const level = this.humanize(payload.level);
+    const track = this.humanize(payload.track);
+    const passed = type === NotificationType.SKILL_ASSESSMENT_PASSED;
+
+    await this.notificationsService.create({
+      userId,
+      type,
+      title: passed
+        ? `You passed the ${level} ${track} assessment`
+        : 'Your skill assessment result is in',
+      body: passed
+        ? payload.certificateCode
+          ? `You scored ${payload.percentage}%. Your skill certificate is ready to share from your dashboard.`
+          : `You scored ${payload.percentage}%. Your level is verified.`
+        : payload.retakeAvailable
+          ? `You scored ${payload.percentage}%, below the 50% pass mark. Review the topics on your results page, then retake with new questions.`
+          : `You scored ${payload.percentage}%, below the 50% pass mark. You have used all your skill attempts.`,
+      data: {
+        level: payload.level,
+        track: payload.track,
+        percentage: payload.percentage,
+        certificate_code: payload.certificateCode ?? null,
+        retake_available: payload.retakeAvailable,
+      },
+    });
+  }
+
+  private humanize(value: string): string {
+    return value
+      .split('_')
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  private async dispatchSkillAssessmentReady(userId: string): Promise<void> {
+    await this.notificationsService.create({
+      userId,
+      type: NotificationType.SKILL_ASSESSMENT_READY,
+      title: 'Your skill assessment retake is open',
+      body: 'You can retake your skill assessment now.',
+      data: {},
     });
   }
 
