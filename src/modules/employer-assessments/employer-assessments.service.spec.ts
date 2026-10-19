@@ -47,7 +47,7 @@ describe('EmployerAssessmentsService', () => {
   };
 
   const mockQuestionRepo = { save: jest.fn() };
-  const mockInviteRepo = { save: jest.fn() };
+  const mockInviteRepo = { save: jest.fn(), count: jest.fn() };
 
   const mockSubmissionRepo = {
     save: jest.fn(),
@@ -1335,6 +1335,28 @@ describe('EmployerAssessmentsService', () => {
       const again = await service.startAssessment('cand-1', 'token-abc');
       expect(mockAttemptRepo.save).toHaveBeenCalledTimes(1);
       expect(again.remaining_seconds).toBeLessThanOrEqual(540);
+    });
+
+    it('blocks talent who were not invited to an internal assessment', async () => {
+      mockAssessmentRepo.findOne.mockResolvedValue({
+        id: 'a1',
+        share_token: 'token-abc',
+        is_active: true,
+        type: 'internal',
+        time_limit_minutes: 10,
+      });
+      mockInviteRepo.count.mockResolvedValue(0);
+      await expect(
+        service.startAssessment('cand-1', 'token-abc'),
+      ).rejects.toThrow('only open to talent');
+      await expect(
+        service.submitAssessment('cand-1', 'token-abc', {
+          timeTakenSeconds: 300,
+          deliveryMode: EmployerAssessmentDeliveryMode.LINK,
+          answers: {},
+        }),
+      ).rejects.toThrow('only open to talent');
+      expect(mockAttemptRepo.save).not.toHaveBeenCalled();
     });
 
     it('refuses to start an already submitted talent assessment', async () => {

@@ -1331,6 +1331,25 @@ export class EmployerAssessmentsService {
   }
 
   /** Opens (or resumes) an attempt so the time limit is measured on the server. */
+  /** Only talent the employer sent an internal assessment to may take it. */
+  private async assertInvitedToInternal(
+    assessment: EmployerAssessment,
+    candidateUserId: string,
+  ): Promise<void> {
+    if (assessment.type !== EmployerAssessmentType.INTERNAL) return;
+    const invited = await this.inviteRepo.count({
+      where: {
+        assessment_id: assessment.id,
+        candidate_user_id: candidateUserId,
+      },
+    });
+    if (invited === 0) {
+      throw new ForbiddenError(
+        'This assessment is only open to talent the employer has invited.',
+      );
+    }
+  }
+
   async startAssessment(
     candidateUserId: string,
     token: string,
@@ -1350,6 +1369,7 @@ export class EmployerAssessmentsService {
         'This assessment is no longer accepting submissions.',
       );
     }
+    await this.assertInvitedToInternal(assessment, candidateUserId);
     const submitted = await this.submissionRepo.count({
       where: {
         assessment_id: assessment.id,
@@ -1412,6 +1432,8 @@ export class EmployerAssessmentsService {
         'This assessment is no longer accepting submissions.',
       );
     }
+
+    await this.assertInvitedToInternal(assessment, candidateUserId);
 
     // Prevent duplicate submissions
     const existing = await this.submissionRepo.findOne({
