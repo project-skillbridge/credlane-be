@@ -1212,8 +1212,8 @@ export class OffersService {
       offer_id: offer.id,
       employer_user_id: employerUserId,
       candidate_user_id: offer.candidate_user_id,
-      overall_rating: dto.overall_rating,
-      would_hire_again: dto.would_hire_again,
+      overall_rating: dto.overallRating,
+      would_hire_again: dto.wouldHireAgain,
       comment: dto.comment?.trim() || null,
     });
     return { status: 'success' };

@@ -14,11 +14,11 @@ export class SubmitHireFeedbackDto {
   @IsInt()
   @Min(1)
   @Max(5)
-  overall_rating: number;
+  overallRating: number;
 
   @ApiProperty()
   @IsBoolean()
-  would_hire_again: boolean;
+  wouldHireAgain: boolean;
 
   @ApiProperty({ required: false, maxLength: 1000 })
   @IsOptional()

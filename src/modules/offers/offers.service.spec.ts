@@ -974,7 +974,7 @@ describe('OffersService', () => {
   });
 
   describe('submitHireFeedback', () => {
-    const dto = { overall_rating: 5, would_hire_again: true };
+    const dto = { overallRating: 5, wouldHireAgain: true };
 
     it('rejects a rating for a hire that was not confirmed', async () => {
       mockOfferRepo.findOne.mockResolvedValue({
