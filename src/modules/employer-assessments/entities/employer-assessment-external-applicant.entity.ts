@@ -35,6 +35,9 @@ export class EmployerAssessmentExternalApplicant {
   @Column({ type: 'varchar', length: 255 })
   email: string;
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  full_name: string | null;
+
   @ApiProperty()
   @Column({ type: 'boolean' })
   consented_marketing: boolean;

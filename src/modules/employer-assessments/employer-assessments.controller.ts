@@ -256,6 +256,19 @@ export class EmployerAssessmentsController {
     );
   }
 
+  @Post('employer/assessments/:assessmentId/access-code')
+  @Roles(UserRole.EMPLOYER)
+  @HttpCode(HttpStatus.OK)
+  regenerateAccessCode(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('assessmentId', ParseUUIDPipe) assessmentId: string,
+  ) {
+    return this.employerAssessmentsService.regenerateAccessCode(
+      employerUserId,
+      assessmentId,
+    );
+  }
+
   @Get('employer/assessments/:assessmentId/share-link')
   @Roles(UserRole.EMPLOYER)
   getAssessmentShareLink(
@@ -313,6 +326,7 @@ export class EmployerAssessmentsController {
 
   @Post('assessments/external/:token/register')
   @Public()
+  @Throttle({ default: { limit: 20, ttl: 3_600_000 } })
   registerExternalAssessment(
     @Param('token') token: string,
     @Body() dto: RegisterExternalAssessmentDto,

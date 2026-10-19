@@ -1189,6 +1189,7 @@ describe('EmployerAssessmentsService', () => {
       is_active: true,
       share_token: 'token-abc',
       type: 'external',
+      access_code: 'ABC123',
       passing_threshold: 60,
       time_limit_minutes: 10,
       employer_user_id: 'employer-1',
@@ -1283,6 +1284,41 @@ describe('EmployerAssessmentsService', () => {
       expect(saved.integrity_level).toBe('review');
     });
 
+    it('turns away a candidate with the wrong access code', async () => {
+      await expect(
+        service.registerExternalApplicant('token-abc', {
+          email: 'x@y.co',
+          consentedMarketing: false,
+          fullName: 'Test Taker',
+          accessCode: 'WRONG1',
+        }),
+      ).rejects.toThrow('access code');
+      expect(mockExternalApplicantRepo.save).not.toHaveBeenCalled();
+      expect(mockBilling.spendInvites).not.toHaveBeenCalled();
+    });
+
+    it('stores the name and releases the questions after a correct sign in', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue(null);
+      mockExternalApplicantRepo.save.mockImplementation(
+        async (data: Record<string, unknown>) => ({
+          id: 'app-1',
+          created_at: new Date(),
+          ...data,
+        }),
+      );
+      const result = await service.registerExternalApplicant('token-abc', {
+        email: 'x@y.co',
+        consentedMarketing: false,
+        fullName: '  Ada   Lovelace ',
+        accessCode: 'abc123',
+      });
+      const saved = mockExternalApplicantRepo.save.mock.calls[0][0] as {
+        full_name: string;
+      };
+      expect(saved.full_name).toBe('Ada Lovelace');
+      expect(Array.isArray(result.questions)).toBe(true);
+    });
+
     it('stores only a hash of the applicant ip on registration', async () => {
       mockExternalApplicantRepo.findOne.mockResolvedValue(null);
       mockExternalApplicantRepo.save.mockImplementation(
@@ -1295,7 +1331,12 @@ describe('EmployerAssessmentsService', () => {
 
       const result = await service.registerExternalApplicant(
         'token-abc',
-        { email: 'A@B.co', consentedMarketing: false },
+        {
+          email: 'A@B.co',
+          consentedMarketing: false,
+          fullName: 'Test Taker',
+          accessCode: 'abc123',
+        },
         '203.0.113.9',
       );
 
@@ -1319,6 +1360,8 @@ describe('EmployerAssessmentsService', () => {
       const result = await service.registerExternalApplicant('token-abc', {
         email: 'a@b.co',
         consentedMarketing: false,
+        fullName: 'Test Taker',
+        accessCode: 'ABC123',
       });
 
       expect(result.remaining_seconds).toBeGreaterThanOrEqual(498);
@@ -1377,6 +1420,8 @@ describe('EmployerAssessmentsService', () => {
       is_active: true,
       type: 'external',
       share_token: 'token-abc',
+      access_code: 'ABC123',
+      questions: [],
       employer_user_id: 'employer-1',
       time_limit_minutes: 10,
     };
@@ -1400,6 +1445,8 @@ describe('EmployerAssessmentsService', () => {
       await service.registerExternalApplicant('token-abc', {
         email: 'new@x.co',
         consentedMarketing: false,
+        fullName: 'Test Taker',
+        accessCode: 'ABC123',
       });
 
       expect(mockBilling.spendInvites).toHaveBeenCalledWith('employer-1', 1);
@@ -1411,6 +1458,8 @@ describe('EmployerAssessmentsService', () => {
       await service.registerExternalApplicant('token-abc', {
         email: 'invited@x.co',
         consentedMarketing: false,
+        fullName: 'Test Taker',
+        accessCode: 'ABC123',
       });
 
       expect(mockBilling.spendInvites).not.toHaveBeenCalled();
@@ -1426,6 +1475,8 @@ describe('EmployerAssessmentsService', () => {
         service.registerExternalApplicant('token-abc', {
           email: 'late@x.co',
           consentedMarketing: false,
+          fullName: 'Test Taker',
+          accessCode: 'ABC123',
         }),
       ).rejects.toThrow("isn't taking new candidates");
       expect(mockExternalApplicantRepo.save).not.toHaveBeenCalled();

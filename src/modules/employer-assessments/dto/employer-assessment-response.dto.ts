@@ -130,6 +130,14 @@ export class PublicEmployerAssessmentResponseDto {
   @ApiProperty({ nullable: true })
   welcome_message: string | null;
 
+  @ApiProperty()
+  question_count: number;
+
+  @ApiProperty({
+    description: 'True for link assessments: candidates sign in with a code.',
+  })
+  requires_access_code: boolean;
+
   @ApiProperty({ type: [PublicEmployerAssessmentQuestionResponseDto] })
   questions: PublicEmployerAssessmentQuestionResponseDto[];
 }

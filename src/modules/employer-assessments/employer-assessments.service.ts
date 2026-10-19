@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { inflateRawSync } from 'zlib';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
@@ -187,6 +187,26 @@ export type QuestionImportValidationResult = {
   questionCount: number;
 };
 
+type PublicQuestion = {
+  id: string;
+  position: number;
+  question_text: string;
+  question_type: string;
+  options: string[] | null;
+};
+
+const ACCESS_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/** Short code with no look-alike characters, easy to read out or message. */
+function generateAccessCode(length = 6): string {
+  const bytes = randomBytes(length);
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += ACCESS_CODE_ALPHABET[bytes[i] % ACCESS_CODE_ALPHABET.length];
+  }
+  return code;
+}
+
 /** Talent only exist for employers after finishing the job evaluation as job ready. */
 const FINISHED_JOB_EVALUATION_SQL = `EXISTS (
   SELECT 1 FROM assessment_attempts att
@@ -319,6 +339,11 @@ export class EmployerAssessmentsService {
           experience_level: dto.experienceLevel,
           time_limit_minutes: dto.timeLimitMinutes,
           welcome_message: dto.welcomeMessage?.trim() || null,
+          access_code:
+            (dto.type ?? EmployerAssessmentType.INTERNAL) ===
+            EmployerAssessmentType.EXTERNAL
+              ? generateAccessCode()
+              : null,
           passing_threshold: dto.passingThreshold,
           question_source: dto.questionSource,
           credlane_assessment_id:
@@ -529,7 +554,7 @@ export class EmployerAssessmentsService {
         assessmentId: submission.assessment_id,
         assessmentTitle: titleById.get(submission.assessment_id) ?? '',
         source: 'external' as const,
-        candidateName: null,
+        candidateName: submission.external_applicant?.full_name ?? null,
         email: submission.external_applicant?.email ?? null,
         score: submission.score,
         passed: submission.passed,
@@ -894,7 +919,7 @@ export class EmployerAssessmentsService {
         this.mailService.send({
           to: email,
           subject: `Assessment invite: ${assessment.title}`,
-          text: `You have been invited to take ${assessment.title}. Open ${this.buildShareUrl(assessment.share_token)} to begin.`,
+          text: `You have been invited to take ${assessment.title}. Open ${this.buildShareUrl(assessment.share_token)} and sign in with your name, email and this access code: ${assessment.access_code ?? ''}`,
         }),
       ),
     );
@@ -954,15 +979,40 @@ export class EmployerAssessmentsService {
     assessment_id: string;
     type: 'external';
     share_url: string;
+    access_code: string | null;
   }> {
     const tokenPayload = await this.getAssessmentToken(
       employerUserId,
       assessmentId,
     );
+    const assessment = await this.assessmentRepo.findOne({
+      where: { id: assessmentId, employer_user_id: employerUserId },
+      select: ['id', 'access_code'],
+    });
     return {
       ...tokenPayload,
       share_url: this.buildShareUrl(tokenPayload.token),
+      access_code: assessment?.access_code ?? null,
     };
+  }
+
+  /** Issues a fresh code; the old one stops working straight away. */
+  async regenerateAccessCode(
+    employerUserId: string,
+    assessmentId: string,
+  ): Promise<{ access_code: string }> {
+    await this.ensureVerifiedEmployer(employerUserId);
+    const code = generateAccessCode();
+    const res = await this.assessmentRepo.update(
+      {
+        id: assessmentId,
+        employer_user_id: employerUserId,
+        type: EmployerAssessmentType.EXTERNAL,
+      },
+      { access_code: code },
+    );
+    if (!res.affected) throw new NotFoundError('External assessment not found');
+    return { access_code: code };
   }
 
   async searchVerifiedTalent(
@@ -1059,13 +1109,20 @@ export class EmployerAssessmentsService {
       experience_level: assessment.experience_level,
       time_limit_minutes: assessment.time_limit_minutes,
       passing_threshold: assessment.passing_threshold,
-      questions: assessment.questions.map((question) => ({
-        id: question.id,
-        position: question.position,
-        question_text: question.question_text,
-        question_type: question.question_type,
-        options: question.options,
-      })),
+      question_count: assessment.questions.length,
+      requires_access_code: assessment.type === EmployerAssessmentType.EXTERNAL,
+      // Link assessments stay locked until the candidate signs in with the
+      // employer's access code; the questions come back from registration.
+      questions:
+        assessment.type === EmployerAssessmentType.EXTERNAL
+          ? []
+          : assessment.questions.map((question) => ({
+              id: question.id,
+              position: question.position,
+              question_text: question.question_text,
+              question_type: question.question_type,
+              options: question.options,
+            })),
     };
   }
 
@@ -1113,13 +1170,8 @@ export class EmployerAssessmentsService {
           id: assessment.id,
           title: assessment.title,
           time_limit_minutes: assessment.time_limit_minutes,
-          questions: assessment.questions.map((question) => ({
-            id: question.id,
-            position: question.position,
-            question_text: question.question_text,
-            question_type: question.question_type,
-            options: question.options,
-          })),
+          // Questions are only released after the candidate signs in.
+          questions: [],
         },
       ],
       deadline: null,
@@ -1138,9 +1190,12 @@ export class EmployerAssessmentsService {
     time_limit_minutes: number;
     remaining_seconds: number;
     submitted: boolean;
+    questions: PublicQuestion[];
   }> {
     const assessment = await this.assessmentRepo.findOne({
       where: { share_token: token, type: EmployerAssessmentType.EXTERNAL },
+      relations: ['questions'],
+      order: { questions: { position: 'ASC' } },
     });
     if (!assessment) {
       throw new NotFoundError('Assessment not found');
@@ -1150,8 +1205,15 @@ export class EmployerAssessmentsService {
         'This assessment is no longer accepting submissions.',
       );
     }
+    if (!this.accessCodeMatches(assessment.access_code, dto.accessCode)) {
+      throw new ForbiddenError(
+        'That access code is not right. Check it with the employer and try again.',
+      );
+    }
+    const questions = this.toPublicQuestions(assessment.questions);
 
     const email = dto.email.toLowerCase();
+    const fullName = dto.fullName.trim().replace(/\s+/g, ' ');
     const existing = await this.externalApplicantRepo.findOne({
       where: { assessment_id: assessment.id, email },
     });
@@ -1169,6 +1231,7 @@ export class EmployerAssessmentsService {
           assessment.time_limit_minutes,
         ),
         submitted: done > 0,
+        questions: done > 0 ? [] : questions,
       };
     }
 
@@ -1193,6 +1256,7 @@ export class EmployerAssessmentsService {
     const applicant = await this.externalApplicantRepo.save({
       assessment_id: assessment.id,
       email,
+      full_name: fullName,
       consented_marketing: dto.consentedMarketing,
       consented_at: new Date(),
       session_token: randomBytes(36).toString('hex'),
@@ -1207,7 +1271,31 @@ export class EmployerAssessmentsService {
       time_limit_minutes: assessment.time_limit_minutes,
       remaining_seconds: assessment.time_limit_minutes * 60,
       submitted: false,
+      questions,
     };
+  }
+
+  private toPublicQuestions(
+    questions: EmployerAssessmentQuestion[],
+  ): PublicQuestion[] {
+    return questions.map((question) => ({
+      id: question.id,
+      position: question.position,
+      question_text: question.question_text,
+      question_type: question.question_type,
+      options: question.options,
+    }));
+  }
+
+  /** Case-insensitive, constant-time check of the employer's access code. */
+  private accessCodeMatches(
+    expected: string | null,
+    given: string | undefined,
+  ): boolean {
+    if (!expected || !given) return false;
+    const a = Buffer.from(expected.trim().toUpperCase());
+    const b = Buffer.from(given.trim().toUpperCase());
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 
   /** One-way hash so we can spot shared networks without storing IPs. */
@@ -1698,7 +1786,7 @@ export class EmployerAssessmentsService {
         id: submission.id,
         source: 'external' as const,
         candidateUserId: null,
-        candidateName: null,
+        candidateName: submission.external_applicant?.full_name ?? null,
         email: submission.external_applicant?.email ?? null,
         score: submission.score,
         status: submission.passed ? ('pass' as const) : ('fail' as const),
