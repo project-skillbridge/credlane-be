@@ -189,12 +189,20 @@ export class EmployerDiscoveryService {
       );
     }
 
-    const [profile, savedMap, offerStatusMap, hasUnlock] = await Promise.all([
-      this.verifiedProfileService.getForEmployerView(candidateUserId),
-      this.getSavedMap(employerUserId, [candidateUserId]),
-      this.getOfferStatusMap(employerUserId, [candidateUserId]),
-      this.billingService.isUnlocked(employerUserId, candidateUserId),
-    ]);
+    const [profile, savedMap, offerStatusMap, hasUnlock, latestOffer] =
+      await Promise.all([
+        this.verifiedProfileService.getForEmployerView(candidateUserId),
+        this.getSavedMap(employerUserId, [candidateUserId]),
+        this.getOfferStatusMap(employerUserId, [candidateUserId]),
+        this.billingService.isUnlocked(employerUserId, candidateUserId),
+        this.offerRepo.findOne({
+          where: {
+            employer_user_id: employerUserId,
+            candidate_user_id: candidateUserId,
+          },
+          order: { created_at: 'DESC' },
+        }),
+      ]);
 
     // A candidate who accepted this employer's invite has chosen to share
     // their details, so it counts as unlocked at no cost.
@@ -233,6 +241,18 @@ export class EmployerDiscoveryService {
       is_saved: savedMap.has(candidateUserId),
       offer_sent: offerStatusMap.has(candidateUserId),
       offer_status: offerStatusMap.get(candidateUserId) ?? null,
+      pipeline: latestOffer
+        ? {
+            offer_id: latestOffer.id,
+            role_title: latestOffer.role_title,
+            status: latestOffer.status,
+            hired:
+              latestOffer.status === OfferStatus.ACCEPTED &&
+              !!latestOffer.hired_at,
+            interview_link: latestOffer.interview_link,
+            sent_at: latestOffer.created_at,
+          }
+        : null,
     };
   }
 

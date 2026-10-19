@@ -2,6 +2,26 @@ import { ApiProperty } from '@nestjs/swagger';
 import { OfferStatus } from '../../offers/entities/offer.entity';
 import { VerifiedProfileResponseDto } from '../../verified-profile/dto/verified-profile.dto';
 
+export class CandidatePipelineDto {
+  @ApiProperty({ format: 'uuid' })
+  offer_id: string;
+
+  @ApiProperty()
+  role_title: string;
+
+  @ApiProperty({ enum: OfferStatus })
+  status: OfferStatus;
+
+  @ApiProperty({ description: 'True once the employer confirmed the hire' })
+  hired: boolean;
+
+  @ApiProperty({ nullable: true })
+  interview_link: string | null;
+
+  @ApiProperty()
+  sent_at: Date;
+}
+
 export class EmployerCandidateProfileResponseDto extends VerifiedProfileResponseDto {
   @ApiProperty({ format: 'uuid', description: 'Candidate user id' })
   user_id: string;
@@ -21,6 +41,14 @@ export class EmployerCandidateProfileResponseDto extends VerifiedProfileResponse
     nullable: true,
   })
   offer_status: OfferStatus | null;
+
+  @ApiProperty({
+    type: CandidatePipelineDto,
+    nullable: true,
+    description:
+      'Latest invite this employer sent, so the page can show where they are with this talent',
+  })
+  pipeline: CandidatePipelineDto | null;
 
   @ApiProperty({
     description: 'True once the employer has unlocked this profile',
