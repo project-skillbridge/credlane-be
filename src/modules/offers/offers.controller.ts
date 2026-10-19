@@ -29,6 +29,7 @@ import { OffersService } from './offers.service';
 import { CreateOfferDto } from './dto/create-offer.dto';
 import { RespondOfferDto } from './dto/respond-offer.dto';
 import { ListOffersQueryDto } from './dto/list-offers-query.dto';
+import { SubmitHireFeedbackDto } from './dto/submit-hire-feedback.dto';
 import { UpdateInterviewLinkDto } from './dto/update-interview-link.dto';
 import {
   EMPLOYER_OFFERS_SUBTAB_NEXTJS_GUIDE,
@@ -285,7 +286,32 @@ export class OffersController {
     );
   }
 
+  @Get('employer/hire-feedback')
+  @Roles(UserRole.EMPLOYER)
+  @ApiOperation({ summary: 'Hires you confirmed but have not rated yet' })
+  async listPendingHireFeedback(@CurrentUser('sub') employerUserId: string) {
+    return this.offersService.listPendingHireFeedback(employerUserId);
+  }
+
+  @Post('employer/hire-feedback/:offerId')
+  @Roles(UserRole.EMPLOYER)
+  @ApiOperation({ summary: 'Rate a confirmed hire' })
+  async submitHireFeedback(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('offerId', ParseUUIDPipe) offerId: string,
+    @Body() dto: SubmitHireFeedbackDto,
+  ) {
+    return this.offersService.submitHireFeedback(employerUserId, offerId, dto);
+  }
+
   // ─── Talent endpoints ─────────────────────────────────────────────────────
+
+  @Get('talent/track-record')
+  @Roles(UserRole.TALENT)
+  @ApiOperation({ summary: 'Rolled-up hire feedback for this talent' })
+  async getTrackRecord(@CurrentUser('sub') candidateUserId: string) {
+    return this.offersService.getTalentTrackRecord(candidateUserId);
+  }
 
   @Get('talent/offers')
   @Roles(UserRole.TALENT)

@@ -65,6 +65,9 @@ type OffersNotificationPort = {
   ): Promise<void>;
 };
 import { Offer, OfferStatus } from './entities/offer.entity';
+import { HireFeedback } from './entities/hire-feedback.entity';
+import { SubmitHireFeedbackDto } from './dto/submit-hire-feedback.dto';
+import { EmployerBillingService } from '../employer-billing/employer-billing.service';
 import { OfferDistributionLog } from './entities/offer-distribution-log.entity';
 import { CreateOfferDto } from './dto/create-offer.dto';
 import { ListOffersQueryDto } from './dto/list-offers-query.dto';
@@ -107,7 +110,28 @@ export type EmployerCandidatesOfferEntry = {
   role_track: string | null;
   job_title: string;
   date_sent: Date;
-  status: OfferStatus;
+  /** `hired` once the employer has confirmed the hire. */
+  status: OfferStatus | 'hired';
+  candidate_avatar_url: string | null;
+  pending_hire_feedback: boolean;
+};
+
+export type HireFeedbackRequestEntry = {
+  id: string;
+  offer_id: string;
+  candidate_user_id: string;
+  candidate_name: string;
+  candidate_avatar_url: string | null;
+  role_title: string;
+  status: 'pending';
+  requested_at: Date;
+  submitted_at: null;
+};
+
+export type TalentTrackRecord = {
+  average_rating: number | null;
+  rating_count: number;
+  would_hire_again_rate: number | null;
 };
 
 export const EMPLOYER_CANDIDATES_OFFERS_EMPTY_MESSAGE =
@@ -204,6 +228,9 @@ export class OffersService {
     private readonly notificationDispatch: OffersNotificationPort,
     private readonly verificationService: EmployerVerificationService,
     private readonly employerRolesService: EmployerRolesService,
+    @InjectRepository(HireFeedback)
+    private readonly hireFeedbackRepo: Repository<HireFeedback>,
+    private readonly billingService: EmployerBillingService,
   ) {
     this.monthlyCap =
       parseInt(process.env.OFFERS_MONTHLY_CAP ?? '', 10) || DEFAULT_MONTHLY_CAP;
@@ -581,8 +608,18 @@ export class OffersService {
       query.status,
     );
 
+    const [unlockedIds, feedbackOfferIds] = await Promise.all([
+      this.billingService.getUnlockedIds(
+        employerUserId,
+        offers.map((o) => o.candidate_user_id),
+      ),
+      this.getFeedbackOfferIds(offers.map((o) => o.id)),
+    ]);
+
     return {
-      offers: offers.map((offer) => this.toCandidatesOfferEntry(offer)),
+      offers: offers.map((offer) =>
+        this.toCandidatesOfferEntry(offer, unlockedIds, feedbackOfferIds),
+      ),
       total,
       page,
       limit,
@@ -607,20 +644,46 @@ export class OffersService {
     return offersSent === 0 ? EMPLOYER_CANDIDATES_OFFERS_EMPTY_MESSAGE : null;
   }
 
-  private toCandidatesOfferEntry(offer: Offer): EmployerCandidatesOfferEntry {
-    const candidate = offer.candidate;
-    const candidateName = candidate
-      ? `${candidate.first_name ?? ''} ${candidate.last_name ?? ''}`.trim()
-      : '';
+  private async getFeedbackOfferIds(offerIds: string[]): Promise<Set<string>> {
+    if (offerIds.length === 0) return new Set();
+    const rows = await this.hireFeedbackRepo.find({
+      where: { offer_id: In(offerIds) },
+      select: ['offer_id'],
+    });
+    return new Set(rows.map((r) => r.offer_id));
+  }
+
+  /** First name and last initial until the employer has unlocked the talent or they accepted. */
+  private candidateDisplayName(offer: Offer, revealed: boolean): string {
+    const first = offer.candidate?.first_name?.trim() ?? '';
+    const last = offer.candidate?.last_name?.trim() ?? '';
+    if (!first && !last) return 'Unknown candidate';
+    if (revealed) return `${first} ${last}`.trim();
+    return `${first} ${last ? `${last.charAt(0).toUpperCase()}.` : ''}`.trim();
+  }
+
+  private toCandidatesOfferEntry(
+    offer: Offer,
+    unlockedIds: Set<string>,
+    feedbackOfferIds: Set<string>,
+  ): EmployerCandidatesOfferEntry {
+    const revealed =
+      offer.status === OfferStatus.ACCEPTED ||
+      unlockedIds.has(offer.candidate_user_id);
+    const hired = offer.status === OfferStatus.ACCEPTED && !!offer.hired_at;
 
     return {
       offer_id: offer.id,
       candidate_user_id: offer.candidate_user_id,
-      candidate_name: candidateName || 'Unknown candidate',
+      candidate_name: this.candidateDisplayName(offer, revealed),
+      candidate_avatar_url: revealed
+        ? (offer.candidate?.avatar_url ?? null)
+        : null,
       role_track: offer.employer_pool_profile?.track ?? null,
       job_title: offer.role_title,
       date_sent: offer.created_at,
-      status: offer.status,
+      status: hired ? 'hired' : offer.status,
+      pending_hire_feedback: hired && !feedbackOfferIds.has(offer.id),
     };
   }
 
@@ -1061,16 +1124,113 @@ export class OffersService {
       throw new BadRequestError('Only accepted offers can be marked as hired');
     }
 
-    await this.offerRepo.manager.transaction(async (manager) => {
+    // Idempotent: confirming twice must not inflate the hire count.
+    if (offer.hired_at) return offer;
+
+    const hiredAt = new Date();
+    const marked = await this.offerRepo.manager.transaction(async (manager) => {
+      const res = await manager
+        .createQueryBuilder()
+        .update(Offer)
+        .set({ hired_at: hiredAt })
+        .where('id = :id AND hired_at IS NULL', { id: offer.id })
+        .execute();
+      if (!res.affected) return false;
       await manager.increment(
         EmployerProfile,
         { user_id: employerUserId },
         'hire_count',
         1,
       );
+      return true;
     });
-
+    if (marked) offer.hired_at = hiredAt;
     return offer;
+  }
+
+  /** Hires the employer confirmed but has not rated yet. */
+  async listPendingHireFeedback(
+    employerUserId: string,
+  ): Promise<{ requests: HireFeedbackRequestEntry[] }> {
+    const hired = await this.offerRepo
+      .createQueryBuilder('offer')
+      .innerJoinAndSelect('offer.candidate', 'candidate')
+      .where('offer.employer_user_id = :employerUserId', { employerUserId })
+      .andWhere('offer.status = :status', { status: OfferStatus.ACCEPTED })
+      .andWhere('offer.hired_at IS NOT NULL')
+      .andWhere(
+        'NOT EXISTS (SELECT 1 FROM hire_feedback hf WHERE hf.offer_id = offer.id)',
+      )
+      .orderBy('offer.hired_at', 'DESC')
+      .getMany();
+
+    return {
+      requests: hired.map((offer) => ({
+        id: offer.id,
+        offer_id: offer.id,
+        candidate_user_id: offer.candidate_user_id,
+        candidate_name: this.candidateDisplayName(offer, true),
+        candidate_avatar_url: offer.candidate?.avatar_url ?? null,
+        role_title: offer.role_title,
+        status: 'pending' as const,
+        requested_at: offer.hired_at as Date,
+        submitted_at: null,
+      })),
+    };
+  }
+
+  async submitHireFeedback(
+    employerUserId: string,
+    offerId: string,
+    dto: SubmitHireFeedbackDto,
+  ): Promise<{ status: 'success' }> {
+    const offer = await this.offerRepo.findOne({
+      where: { id: offerId, employer_user_id: employerUserId },
+    });
+    if (!offer) {
+      throw new NotFoundError('Offer not found');
+    }
+    if (offer.status !== OfferStatus.ACCEPTED || !offer.hired_at) {
+      throw new BadRequestError('You can only rate a hire you have confirmed');
+    }
+    const existing = await this.hireFeedbackRepo.count({
+      where: { offer_id: offer.id },
+    });
+    if (existing > 0) {
+      throw new ConflictError('You already rated this hire');
+    }
+    await this.hireFeedbackRepo.save({
+      offer_id: offer.id,
+      employer_user_id: employerUserId,
+      candidate_user_id: offer.candidate_user_id,
+      overall_rating: dto.overall_rating,
+      would_hire_again: dto.would_hire_again,
+      comment: dto.comment?.trim() || null,
+    });
+    return { status: 'success' };
+  }
+
+  async getTalentTrackRecord(
+    candidateUserId: string,
+  ): Promise<TalentTrackRecord> {
+    const raw = await this.hireFeedbackRepo
+      .createQueryBuilder('hf')
+      .select('COUNT(*)', 'count')
+      .addSelect('AVG(hf.overall_rating)', 'avg')
+      .addSelect(
+        'AVG(CASE WHEN hf.would_hire_again THEN 1 ELSE 0 END)',
+        'again',
+      )
+      .where('hf.candidate_user_id = :candidateUserId', { candidateUserId })
+      .getRawOne<{ count: string; avg: string | null; again: string | null }>();
+    const count = Number(raw?.count ?? 0);
+    return {
+      average_rating:
+        count && raw?.avg ? Math.round(Number(raw.avg) * 10) / 10 : null,
+      rating_count: count,
+      would_hire_again_rate:
+        count && raw?.again ? Math.round(Number(raw.again) * 100) : null,
+    };
   }
 
   async withdrawOffer(
