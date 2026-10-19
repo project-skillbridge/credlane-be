@@ -35,6 +35,9 @@ export class EmployerAssessmentExternalApplicant {
   @Column({ type: 'varchar', length: 255 })
   email: string;
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  full_name: string | null;
+
   @ApiProperty()
   @Column({ type: 'boolean' })
   consented_marketing: boolean;
@@ -46,6 +49,10 @@ export class EmployerAssessmentExternalApplicant {
   @ApiProperty()
   @Column({ type: 'varchar', length: 96 })
   session_token: string;
+
+  /** Per-assessment hash of the network address, to spot shared networks. */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  ip_hash: string | null;
 
   @ApiProperty()
   @Column({ type: 'timestamp with time zone' })

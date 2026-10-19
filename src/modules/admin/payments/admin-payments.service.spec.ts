@@ -247,39 +247,35 @@ describe('AdminPaymentsService', () => {
       const laterDate = new Date('2026-03-01');
 
       const employerQb = chainable({
-        getRawMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              id: 'es-1',
-              subscriber_name: 'Acme Corp',
-              type: 'employer',
-              package_tier: 'Free',
-              monthly_price: '0',
-              status: 'active',
-              start_date: earlyDate,
-              next_billing_date: null,
-              grace_period_ends_at: null,
-            },
-          ]),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            id: 'es-1',
+            subscriber_name: 'Acme Corp',
+            type: 'employer',
+            package_tier: 'Free',
+            monthly_price: '0',
+            status: 'active',
+            start_date: earlyDate,
+            next_billing_date: null,
+            grace_period_ends_at: null,
+          },
+        ]),
         getCount: jest.fn().mockResolvedValue(1),
       });
       const talentQb = chainable({
-        getRawMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              id: 'ts-1',
-              subscriber_name: 'Jane Talent',
-              type: 'talent',
-              package_tier: null,
-              monthly_price: '9.99',
-              status: 'active',
-              start_date: laterDate,
-              next_billing_date: new Date('2026-04-01'),
-              grace_period_ends_at: null,
-            },
-          ]),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            id: 'ts-1',
+            subscriber_name: 'Jane Talent',
+            type: 'talent',
+            package_tier: null,
+            monthly_price: '9.99',
+            status: 'active',
+            start_date: laterDate,
+            next_billing_date: new Date('2026-04-01'),
+            grace_period_ends_at: null,
+          },
+        ]),
         getCount: jest.fn().mockResolvedValue(1),
       });
 
@@ -303,21 +299,19 @@ describe('AdminPaymentsService', () => {
         getCount: jest.fn().mockResolvedValue(0),
       });
       const employerQb = chainable({
-        getRawMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              id: 'es-1',
-              subscriber_name: 'Acme Corp',
-              type: 'employer',
-              package_tier: 'Free',
-              monthly_price: '0',
-              status: 'free',
-              start_date: new Date(),
-              next_billing_date: null,
-              grace_period_ends_at: null,
-            },
-          ]),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            id: 'es-1',
+            subscriber_name: 'Acme Corp',
+            type: 'employer',
+            package_tier: 'Free',
+            monthly_price: '0',
+            status: 'free',
+            start_date: new Date(),
+            next_billing_date: null,
+            grace_period_ends_at: null,
+          },
+        ]),
         getCount: jest.fn().mockResolvedValue(1),
       });
 
@@ -382,21 +376,19 @@ describe('AdminPaymentsService', () => {
         getCount: jest.fn().mockResolvedValue(0),
       });
       const employerQb = chainable({
-        getRawMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              id: 'es-1',
-              subscriber_name: 'Acme Corp',
-              type: 'employer',
-              package_tier: 'Free',
-              monthly_price: '0',
-              status: 'free',
-              start_date: new Date(),
-              next_billing_date: null,
-              grace_period_ends_at: null,
-            },
-          ]),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            id: 'es-1',
+            subscriber_name: 'Acme Corp',
+            type: 'employer',
+            package_tier: 'Free',
+            monthly_price: '0',
+            status: 'free',
+            start_date: new Date(),
+            next_billing_date: null,
+            grace_period_ends_at: null,
+          },
+        ]),
         getCount: jest.fn().mockResolvedValue(1),
       });
 
@@ -416,21 +408,19 @@ describe('AdminPaymentsService', () => {
         getCount: jest.fn().mockResolvedValue(0),
       });
       const talentQb = chainable({
-        getRawMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              id: 'ts-1',
-              subscriber_name: 'Jane Talent',
-              type: 'talent',
-              package_tier: null,
-              monthly_price: null,
-              status: 'free',
-              start_date: new Date(),
-              next_billing_date: null,
-              grace_period_ends_at: null,
-            },
-          ]),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            id: 'ts-1',
+            subscriber_name: 'Jane Talent',
+            type: 'talent',
+            package_tier: null,
+            monthly_price: null,
+            status: 'free',
+            start_date: new Date(),
+            next_billing_date: null,
+            grace_period_ends_at: null,
+          },
+        ]),
         getCount: jest.fn().mockResolvedValue(1),
       });
 
@@ -451,21 +441,19 @@ describe('AdminPaymentsService', () => {
       });
       const futureGrace = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
       const employerQb = chainable({
-        getRawMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              id: 'es-1',
-              subscriber_name: 'Acme Corp',
-              type: 'employer',
-              package_tier: 'Paid',
-              monthly_price: '49.99',
-              status: 'past_due',
-              start_date: new Date(),
-              next_billing_date: new Date(),
-              grace_period_ends_at: futureGrace,
-            },
-          ]),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            id: 'es-1',
+            subscriber_name: 'Acme Corp',
+            type: 'employer',
+            package_tier: 'Paid',
+            monthly_price: '49.99',
+            status: 'past_due',
+            start_date: new Date(),
+            next_billing_date: new Date(),
+            grace_period_ends_at: futureGrace,
+          },
+        ]),
         getCount: jest.fn().mockResolvedValue(1),
       });
 
@@ -484,21 +472,19 @@ describe('AdminPaymentsService', () => {
         getCount: jest.fn().mockResolvedValue(0),
       });
       const talentQb = chainable({
-        getRawMany: jest
-          .fn()
-          .mockResolvedValue([
-            {
-              id: 'ts-1',
-              subscriber_name: 'Jane Talent',
-              type: 'talent',
-              package_tier: null,
-              monthly_price: null,
-              status: 'active',
-              start_date: new Date(),
-              next_billing_date: null,
-              grace_period_ends_at: null,
-            },
-          ]),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            id: 'ts-1',
+            subscriber_name: 'Jane Talent',
+            type: 'talent',
+            package_tier: null,
+            monthly_price: null,
+            status: 'active',
+            start_date: new Date(),
+            next_billing_date: null,
+            grace_period_ends_at: null,
+          },
+        ]),
         getCount: jest.fn().mockResolvedValue(1),
       });
 

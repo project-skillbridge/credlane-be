@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import { VerifiedLevel } from '../../assessments/entities';
 
 export function metadataDifficulty(
@@ -38,4 +39,21 @@ export function resolveCompetencyHint(
   return typeof primaryToolDuration === 'string'
     ? primaryToolDuration
     : undefined;
+}
+
+/**
+ * Returns the options in a fresh random order. Applied once when a session is
+ * created so the order stays stable on resume but differs between attempts and
+ * accounts. Scoring compares answer text, so reordering never changes marks.
+ */
+export function shuffleOptions<T>(options: T[] | null | undefined): T[] | null {
+  if (!Array.isArray(options)) {
+    return null;
+  }
+  const shuffled = [...options];
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const j = randomInt(i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
 }

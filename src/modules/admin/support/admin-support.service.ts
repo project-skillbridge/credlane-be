@@ -13,9 +13,7 @@ import {
   SupportTicketStatus,
   SupportTicketType,
 } from './entities/support-ticket.entity';
-import {
-  SupportTicketMessageAuthorType,
-} from './entities/support-ticket-message.entity';
+import { SupportTicketMessageAuthorType } from './entities/support-ticket-message.entity';
 
 export interface SupportTicketListRow {
   id: string;

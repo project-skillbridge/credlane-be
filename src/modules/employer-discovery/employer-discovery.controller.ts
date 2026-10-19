@@ -12,6 +12,7 @@ import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { UserRole } from '../users/entities/user.entity';
+import { HiringBriefService } from './hiring-brief.service';
 import { EmployerDiscoveryService } from './employer-discovery.service';
 import { DiscoveryCandidatesQueryDto } from './dto/discovery-candidates-query.dto';
 import { DiscoveryCandidatesListResponseDto } from './dto/discovery-candidate-card.dto';
@@ -24,7 +25,10 @@ import { PaginationDto } from '../users/dto/pagination.dto';
 @Controller('employer/discovery')
 @Roles(UserRole.EMPLOYER)
 export class EmployerDiscoveryController {
-  constructor(private readonly discoveryService: EmployerDiscoveryService) {}
+  constructor(
+    private readonly discoveryService: EmployerDiscoveryService,
+    private readonly hiringBriefService: HiringBriefService,
+  ) {}
 
   @Get('candidates')
   @ApiOperation({
@@ -52,6 +56,34 @@ export class EmployerDiscoveryController {
     @Param('userId', ParseUUIDPipe) candidateUserId: string,
   ) {
     return this.discoveryService.getCandidateProfile(
+      employerUserId,
+      candidateUserId,
+    );
+  }
+
+  @Get('candidates/:userId/hiring-brief')
+  @ApiOperation({
+    summary: 'AI hiring brief for a candidate',
+    description:
+      'Strengths, gaps and open-ended answer review written from the candidate\'s skill and job-readiness assessments. Generated once per set of results and cached; returns status "generating" until ready.',
+  })
+  async getHiringBrief(
+    @Param('userId', ParseUUIDPipe) candidateUserId: string,
+  ) {
+    return this.hiringBriefService.getBrief(candidateUserId);
+  }
+
+  @Post('candidates/:userId/unlock')
+  @ApiOperation({
+    summary: 'Unlock a candidate profile',
+    description:
+      'Spends one unlock (plan quota first, then credits) to reveal full name, photo, resume, portfolio and contact. Unlocking twice never charges twice. Returns 402 when no unlocks are left.',
+  })
+  async unlockCandidate(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('userId', ParseUUIDPipe) candidateUserId: string,
+  ) {
+    return this.discoveryService.unlockCandidate(
       employerUserId,
       candidateUserId,
     );

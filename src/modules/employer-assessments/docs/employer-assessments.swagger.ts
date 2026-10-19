@@ -187,6 +187,47 @@ export const ApiListEmployerAssessmentResults = () =>
     ApiResponse({ status: 500, description: 'Internal server error' }),
   );
 
+export const ApiGetCredlaneCatalogueEntry = () =>
+  applyDecorators(
+    ApiBearerAuth(),
+    ApiOperation({
+      summary: 'Preview a SkillSift library assessment (questions, no answers)',
+    }),
+    ApiResponse({ status: 200, description: 'Library assessment returned' }),
+    ApiResponse({ status: 403, description: 'Verified employer required' }),
+    ApiResponse({ status: 404, description: 'Library assessment not found' }),
+  );
+
+export const ApiDraftAssessmentQuestions = () =>
+  applyDecorators(
+    ApiBearerAuth(),
+    ApiOperation({
+      summary: 'AI-draft screening questions from a job description',
+      description:
+        'Returns a draft the employer must review and edit. Limited to 10 per hour.',
+    }),
+    ApiResponse({ status: 200, description: 'Drafted questions returned' }),
+    ApiResponse({ status: 400, description: 'Not enough usable questions' }),
+    ApiResponse({ status: 403, description: 'Verified employer required' }),
+    ApiResponse({ status: 429, description: 'Too many drafts requested' }),
+    ApiResponse({ status: 503, description: 'AI service unavailable' }),
+  );
+
+export const ApiGetEmployerAssessmentResultDetail = () =>
+  applyDecorators(
+    ApiBearerAuth(),
+    ApiOperation({
+      summary: 'Get one submission with per-question answers and rank',
+    }),
+    ApiResponse({ status: 200, description: 'Submission detail returned' }),
+    ApiResponse({ status: 401, description: 'Authentication required' }),
+    ApiResponse({ status: 403, description: 'Employer access required' }),
+    ApiResponse({
+      status: 404,
+      description: 'Assessment or submission not found',
+    }),
+  );
+
 export const ApiGetPublicAssessment = () =>
   applyDecorators(
     ApiOperation({ summary: 'Get public assessment by share token' }),

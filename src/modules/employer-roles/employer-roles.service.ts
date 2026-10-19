@@ -298,11 +298,16 @@ export class EmployerRolesService {
         'interest.role_id = :roleId AND interest.talent_user_id = pool.candidate_id',
         { roleId },
       )
-      .where('pool.tier = :tier', { tier: 'job_ready' });
+      .where('pool.tier = :tier', { tier: 'job_ready' })
+      // Only candidates on the role's track, plus anyone who flagged interest
+      // in this specific role.
+      .andWhere('(pool.track = :roleTrack OR interest.id IS NOT NULL)', {
+        roleTrack: role.track,
+      });
 
     if (query.search?.trim()) {
       baseQb.andWhere(
-        `(u.email ILIKE :search OR u.first_name ILIKE :search OR u.last_name ILIKE :search OR CONCAT(u.first_name, ' ', u.last_name) ILIKE :search)`,
+        `(u.first_name ILIKE :search OR u.last_name ILIKE :search OR CONCAT(u.first_name, ' ', u.last_name) ILIKE :search)`,
         { search: `%${query.search.trim()}%` },
       );
     }

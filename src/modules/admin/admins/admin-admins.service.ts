@@ -48,8 +48,7 @@ function deriveAdminStatus(user: User): AdminAccountStatus {
 }
 
 function generateTempPassword(): string {
-  const chars =
-    'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
   return Array.from(randomBytes(12))
     .map((b) => chars[b % chars.length])
     .join('');
@@ -140,7 +139,11 @@ export class AdminAdminsService {
   async invite(
     dto: InviteAdminDto,
     actorId: string,
-  ): Promise<{ message: string; temp_password: string; account: AdminAccountRow }> {
+  ): Promise<{
+    message: string;
+    temp_password: string;
+    account: AdminAccountRow;
+  }> {
     void actorId;
     const normalizedEmail = normalizeEmail(dto.email) as string;
     const existing = await this.usersService.findByEmail(normalizedEmail);

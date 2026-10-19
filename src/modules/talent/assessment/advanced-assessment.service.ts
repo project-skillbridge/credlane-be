@@ -1,3 +1,5 @@
+import { RoleMatchAlertService } from '../../notifications/role-match-alert.service';
+import { HiringBriefService } from '../../employer-discovery/hiring-brief.service';
 import {
   BadRequestException,
   ConflictException,
@@ -62,10 +64,12 @@ import {
   SubmitAdvancedAssessmentDto,
 } from './dto/advanced-assessment.dto';
 import { IntegrityFlagResult } from './dto/integrity-event.dto';
+import { INTEGRITY_VIOLATION_LIMIT } from '../talent.constants';
 import {
   metadataDifficulty,
   resolveCompetencyHint,
   resolveIndustryContext,
+  shuffleOptions,
 } from './assessment-utils';
 import {
   competenciesForTrack,
@@ -98,6 +102,12 @@ const ADVANCED_LT2_COUNT = 3;
 // Final attempt percentage is weighted separately: MCQ 30%, text 70%.
 const TEXT_FULL_RUBRIC_MAX = 12;
 
+/** A session question as the client sees it: no answer key, no grading rubric. */
+export type PublicAdvancedAssessmentQuestion = Omit<
+  AdvancedAssessmentGeneratedQuestion,
+  'correct_answer'
+>;
+
 export interface AdvancedAssessmentSessionResult {
   status: string;
   message: string;
@@ -113,7 +123,7 @@ export interface AdvancedAssessmentSessionResult {
   open_text_count: number;
   /** True when a 15th question (LT-3) will be generated after lt2-submit. */
   pending_lt3: boolean;
-  questions: AdvancedAssessmentGeneratedQuestion[];
+  questions: PublicAdvancedAssessmentQuestion[];
 }
 
 export interface AdvancedAssessmentSubmitResult {
@@ -133,8 +143,16 @@ type AdvancedAssessmentSessionPayload = {
   context?: {
     verified_level?: unknown;
     submit_enqueued_at?: string;
+    pre_submit_lock?: PreSubmitLockState;
   };
   questions?: unknown;
+};
+
+/** Retake-gate columns as they were before a submit set the 14-day lock. */
+type PreSubmitLockState = {
+  locked_from: string | null;
+  locked_until: string | null;
+  retake_required: boolean;
 };
 
 type AdvancedQuestionBank = {
@@ -165,6 +183,8 @@ export class AdvancedAssessmentService {
     private readonly rubricScoring: RubricScoringService,
     private readonly guidanceReport: GuidanceReportService,
     private readonly employerPoolProfileService: EmployerPoolProfileService,
+    private readonly hiringBriefService: HiringBriefService,
+    private readonly roleMatchAlert: RoleMatchAlertService,
     private readonly questionGeneration: QuestionGenerationService,
     private readonly usersService: UsersService,
     private readonly notificationDispatch: NotificationDispatchService,
@@ -328,26 +348,46 @@ export class AdvancedAssessmentService {
             expires_at: expiresAt,
             generated_questions_json: {
               context: aiResult.context,
-              questions: aiResult.questions,
+              questions: aiResult.questions.map((question) => ({
+                ...question,
+                options: shuffleOptions(question.options),
+              })),
             },
           }),
         );
 
-        await manager.save(
-          TalentQuestionHistory,
-          aiResult.questions.map((question) =>
-            manager.create(TalentQuestionHistory, {
-              talent_profile_id: profile.id,
-              question_id: question.question_id,
-              attempt_id: attempt.id,
-              user_answer: { served: true },
-              is_correct: null,
-              raw_score: null,
-              max_score: null,
-              answered_at: startedAt,
-            }),
-          ),
-        );
+        // Questions can be re-served on a retake when the bank is small, so
+        // re-link the existing history row instead of violating the unique key.
+        await manager
+          .createQueryBuilder()
+          .insert()
+          .into(TalentQuestionHistory)
+          .values(
+            aiResult.questions.map((question) =>
+              manager.create(TalentQuestionHistory, {
+                talent_profile_id: profile.id,
+                question_id: question.question_id,
+                attempt_id: attempt.id,
+                user_answer: { served: true },
+                is_correct: null,
+                raw_score: null,
+                max_score: null,
+                answered_at: startedAt,
+              }),
+            ),
+          )
+          .orUpdate(
+            [
+              'attempt_id',
+              'user_answer',
+              'is_correct',
+              'raw_score',
+              'max_score',
+              'answered_at',
+            ],
+            ['talent_profile_id', 'question_id'],
+          )
+          .execute();
 
         return attempt;
       },
@@ -466,9 +506,19 @@ export class AdvancedAssessmentService {
         throw this.buildAdvancedSubmitProcessingConflict(otherInFlight.id);
       }
 
+      const currentProfile = await manager.findOne(TalentProfile, {
+        where: { id: profile.id },
+      });
       lockedAttempt.generated_questions_json = this.withSubmitEnqueuedAt(
         lockedAttempt,
         new Date().toISOString(),
+        {
+          locked_from:
+            currentProfile?.assessment_locked_from?.toISOString() ?? null,
+          locked_until:
+            currentProfile?.assessment_locked_until?.toISOString() ?? null,
+          retake_required: currentProfile?.advanced_retake_required ?? false,
+        },
       );
       await manager.save(AssessmentAttempt, lockedAttempt);
 
@@ -497,15 +547,7 @@ export class AdvancedAssessmentService {
         })),
       });
     } catch {
-      await this.clearSubmitEnqueuedAt(dto.sessionId);
-      await this.talentProfileRepo.update(
-        { id: profile.id },
-        {
-          assessment_locked_from: null,
-          assessment_locked_until: null,
-          advanced_retake_required: false,
-        },
-      );
+      await this.restorePreSubmitLock(profile.id, dto.sessionId);
       throw new ServiceUnavailableException({
         error: 'SUBMIT_QUEUE_UNAVAILABLE',
         message: ErrorMessages.ADVANCED_ASSESSMENT.SUBMIT_QUEUE_UNAVAILABLE,
@@ -521,6 +563,34 @@ export class AdvancedAssessmentService {
       message: SuccessMessages.ADVANCED_ASSESSMENT.QUEUED,
       session_id: dto.sessionId,
     };
+  }
+
+  /**
+   * Called when background scoring has run out of retries (for example the
+   * AI service is down). The retake lock set at submit time exists to stop
+   * repeat attempts after a *scored* result, so release it: the talent
+   * shouldn't wait 14 days because of a failure on our side. No-op once the
+   * attempt has completed.
+   */
+  async releaseFailedSubmit(userId: string, sessionId: string): Promise<void> {
+    const profile = await this.talentProfileRepo.findOne({
+      where: { user_id: userId },
+    });
+    if (!profile) return;
+
+    const attempt = await this.attemptRepo.findOne({
+      where: {
+        id: sessionId,
+        talent_profile_id: profile.id,
+        assessment_type: AssessmentType.ADVANCED,
+      },
+    });
+    if (!attempt || attempt.completed_at) return;
+
+    await this.restorePreSubmitLock(profile.id, sessionId);
+    this.logger.error(
+      `Advanced scoring failed permanently; released retake lock: attempt=${sessionId} user=${userId}`,
+    );
   }
 
   /**
@@ -832,6 +902,9 @@ export class AdvancedAssessmentService {
           integrityClean: integrityConfidence === 'high',
           personalContext,
         });
+        // Write the employer-facing brief now; not awaited so submit stays fast.
+        void this.hiringBriefService.warm(profile.id);
+        void this.roleMatchAlert.notifyForCandidate(profile.id, userId);
       } catch (error) {
         this.logger.error(
           `Employer pool profile generation failed for user=${userId}: ${String(error)}`,
@@ -1132,6 +1205,18 @@ export class AdvancedAssessmentService {
           attempt.copy_paste_count +
           (counterField === 'copy_paste_count' ? 1 : 0);
 
+        const voided =
+          tabSwitchCount >= INTEGRITY_VIOLATION_LIMIT ||
+          copyPasteCount >= INTEGRITY_VIOLATION_LIMIT;
+        if (!voided) {
+          return {
+            voided,
+            attemptId: attempt.id,
+            tabSwitchCount,
+            copyPasteCount,
+          };
+        }
+
         const lockedFrom = new Date();
         const unlocksAt = new Date(lockedFrom);
         unlocksAt.setDate(unlocksAt.getDate() + RETAKE_GATE_DAYS);
@@ -1152,12 +1237,24 @@ export class AdvancedAssessmentService {
         );
 
         return {
+          voided,
           attemptId: attempt.id,
           tabSwitchCount,
           copyPasteCount,
         };
       },
     );
+
+    if (!result.voided) {
+      return {
+        status: 'recorded',
+        message: `Violation recorded (${Math.max(result.tabSwitchCount, result.copyPasteCount)} of ${INTEGRITY_VIOLATION_LIMIT}). The session ends at ${INTEGRITY_VIOLATION_LIMIT}.`,
+        tabSwitchCount: result.tabSwitchCount,
+        copyPasteCount: result.copyPasteCount,
+        sessionVoided: false,
+        action: 'warn',
+      };
+    }
 
     this.logger.warn(
       `Session voided - integrity ${dto.eventType}: attempt=${result.attemptId} user=${userId}`,
@@ -1317,6 +1414,7 @@ export class AdvancedAssessmentService {
   private withSubmitEnqueuedAt(
     attempt: AssessmentAttempt,
     enqueuedAt: string,
+    preSubmitLock: PreSubmitLockState,
   ): Record<string, any> {
     const payload = this.readSessionPayload(attempt);
     return {
@@ -1324,31 +1422,53 @@ export class AdvancedAssessmentService {
       context: {
         ...(payload.context ?? {}),
         submit_enqueued_at: enqueuedAt,
+        pre_submit_lock: preSubmitLock,
       },
       questions: payload.questions,
     };
   }
 
-  private async clearSubmitEnqueuedAt(sessionId: string): Promise<void> {
+  /**
+   * Undo a submit that never produced a result: clear the in-flight marker and
+   * put the retake gate back exactly as it was before submit, so a talent who
+   * was already required to retake keeps that requirement.
+   */
+  private async restorePreSubmitLock(
+    profileId: string,
+    sessionId: string,
+  ): Promise<void> {
     const attempt = await this.attemptRepo.findOne({
       where: { id: sessionId },
     });
-    if (!attempt?.generated_questions_json) {
-      return;
+    const payload = attempt?.generated_questions_json
+      ? this.readSessionPayload(attempt)
+      : null;
+    const previous = payload?.context?.pre_submit_lock;
+
+    if (attempt && payload) {
+      const context = { ...(payload.context ?? {}) };
+      delete context.submit_enqueued_at;
+      delete context.pre_submit_lock;
+      attempt.generated_questions_json = {
+        ...payload,
+        context,
+        questions: payload.questions,
+      } as Record<string, any>;
+      await this.attemptRepo.save(attempt);
     }
 
-    const payload = this.readSessionPayload(attempt);
-    const context = { ...(payload.context ?? {}) };
-    delete context.submit_enqueued_at;
-
-    const clearedPayload = {
-      ...payload,
-      context,
-      questions: payload.questions,
-    };
-
-    attempt.generated_questions_json = clearedPayload as Record<string, any>;
-    await this.attemptRepo.save(attempt);
+    await this.talentProfileRepo.update(
+      { id: profileId },
+      {
+        assessment_locked_from: previous?.locked_from
+          ? new Date(previous.locked_from)
+          : null,
+        assessment_locked_until: previous?.locked_until
+          ? new Date(previous.locked_until)
+          : null,
+        advanced_retake_required: previous?.retake_required ?? false,
+      },
+    );
   }
 
   private assertAdvancedRetakeUnlocked(profile: TalentProfile): void {
@@ -1968,14 +2088,25 @@ export class AdvancedAssessmentService {
       expectedQuestions: ADVANCED_ASSESSMENT_BASE_QUESTIONS,
       gotQuestions,
     });
+    // Internals (track, counts) stay in the alert above; the client only learns
+    // that the next assessment is being prepared.
     throw new ServiceUnavailableException({
-      error: 'BANK_EXHAUSTED',
+      error: 'ASSESSMENT_PREPARING',
       message: ErrorMessages.ADVANCED_ASSESSMENT.BANK_EXHAUSTED,
-      track: profile.track ?? null,
-      verified_level: profile.validated_level ?? null,
-      expected_questions: ADVANCED_ASSESSMENT_BASE_QUESTIONS,
-      got_questions: gotQuestions,
     });
+  }
+
+  /** Drops the answer key and grading rubric before a question reaches the client. */
+  private toPublicQuestion(
+    question: AdvancedAssessmentGeneratedQuestion,
+  ): PublicAdvancedAssessmentQuestion {
+    const { correct_answer: _ignored, metadata, ...rest } = question;
+    const publicMetadata = { ...(metadata as Record<string, unknown>) };
+    delete publicMetadata.grading_rubric;
+    return {
+      ...rest,
+      metadata: publicMetadata,
+    };
   }
 
   private toSessionResult(
@@ -2014,7 +2145,7 @@ export class AdvancedAssessmentService {
       mcq_count: mcqCount,
       open_text_count: openTextCount,
       pending_lt3: false,
-      questions,
+      questions: questions.map((question) => this.toPublicQuestion(question)),
     };
   }
 

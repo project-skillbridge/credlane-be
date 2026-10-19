@@ -1,5 +1,10 @@
 import { Controller, Get, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { AdminTiers } from '../../../common/decorators/admin-tiers.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { AdminTier, UserRole } from '../../users/entities/user.entity';
@@ -23,7 +28,9 @@ export class AdminOffersController {
   @Get('stats')
   @ApiOperation({ summary: 'Offers page stat cards (row of 4)' })
   @ApiOkResponse({ type: AdminOffersStatsResponse })
-  async getStats(@Query() query: AdminOffersStatsQueryDto): Promise<AdminOffersStatsResponse> {
+  async getStats(
+    @Query() query: AdminOffersStatsQueryDto,
+  ): Promise<AdminOffersStatsResponse> {
     const data = await this.offersService.getStats(
       query.dateFrom,
       query.dateTo,
@@ -34,7 +41,9 @@ export class AdminOffersController {
   @Get('funnel')
   @ApiOperation({ summary: 'Offer status funnel chart data' })
   @ApiOkResponse({ type: AdminOfferFunnelResponse })
-  async getFunnel(@Query() query: AdminOffersStatsQueryDto): Promise<AdminOfferFunnelResponse> {
+  async getFunnel(
+    @Query() query: AdminOffersStatsQueryDto,
+  ): Promise<AdminOfferFunnelResponse> {
     const data = await this.offersService.getFunnel(
       query.dateFrom,
       query.dateTo,
@@ -47,7 +56,9 @@ export class AdminOffersController {
     summary: 'All Offers table — paginated, filtered, searchable',
   })
   @ApiOkResponse({ type: AdminOfferListResponse })
-  async findAll(@Query() query: AdminListOffersQueryDto): Promise<AdminOfferListResponse> {
+  async findAll(
+    @Query() query: AdminListOffersQueryDto,
+  ): Promise<AdminOfferListResponse> {
     const data = await this.offersService.findAll(query);
     return { status: 'success', data };
   }

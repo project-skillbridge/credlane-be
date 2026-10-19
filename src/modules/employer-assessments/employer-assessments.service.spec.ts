@@ -19,7 +19,9 @@ import {
 import type { TalentRoleTrack } from '@modules/talent/talent.constants';
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
-import { AssessmentQuestion } from '../assessments/entities/assessment-question.entity';
+import { CredlaneCatalogueQuestion } from './entities/credlane-catalogue-question.entity';
+import { PaymentRequiredError } from '../../shared';
+import { EmployerAssessmentAttempt } from './entities/employer-assessment-attempt.entity';
 import { EmployerSavedCandidate } from '../employer-discovery/entities/employer-saved-candidate.entity';
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
 import { EmployerPoolProfile } from '../talent/entities/employer-pool-profile.entity';
@@ -27,6 +29,7 @@ import { EmployerRole } from '../employer-roles/entities/employer-role.entity';
 import { User } from '../users/entities/user.entity';
 import { NotificationDispatchService } from '../notifications/notification-dispatch.service';
 import { Offer, OfferStatus } from '../offers/entities/offer.entity';
+import { EmployerBillingService } from '../employer-billing/employer-billing.service';
 import { MailService } from '../mail/mail.service';
 import { EmployerAssessmentExternalApplicant } from './entities/employer-assessment-external-applicant.entity';
 import { EmployerAssessmentExternalInvite } from './entities/employer-assessment-external-invite.entity';
@@ -44,11 +47,17 @@ describe('EmployerAssessmentsService', () => {
   };
 
   const mockQuestionRepo = { save: jest.fn() };
-  const mockInviteRepo = { save: jest.fn() };
+  const mockInviteRepo = {
+    save: jest.fn(),
+    count: jest.fn(),
+    find: jest.fn(),
+  };
 
   const mockSubmissionRepo = {
     save: jest.fn(),
     findOne: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
+    find: jest.fn().mockResolvedValue([]),
     findAndCount: jest.fn().mockResolvedValue([[], 0]),
     createQueryBuilder: jest.fn().mockReturnValue({
       select: jest.fn().mockReturnThis(),
@@ -59,7 +68,17 @@ describe('EmployerAssessmentsService', () => {
     }),
   };
 
-  const mockBankQuestionRepo = { find: jest.fn() };
+  const mockCatalogueQuestionQb = {
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    getRawMany: jest.fn().mockResolvedValue([]),
+  };
+  const mockCatalogueQuestionRepo = {
+    find: jest.fn(),
+    createQueryBuilder: jest.fn().mockReturnValue(mockCatalogueQuestionQb),
+  };
   const mockSavedCandidateRepo = {
     createQueryBuilder: jest.fn(),
   };
@@ -68,9 +87,17 @@ describe('EmployerAssessmentsService', () => {
     createQueryBuilder: jest.fn(),
   };
 
+  const mockUserQb = {
+    select: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue([]),
+  };
+
   const mockUserRepo = {
     findOne: jest.fn(),
     findBy: jest.fn(),
+    createQueryBuilder: jest.fn().mockReturnValue(mockUserQb),
   };
 
   const mockEmployerRoleRepo = {
@@ -109,19 +136,29 @@ describe('EmployerAssessmentsService', () => {
     },
   };
 
+  const mockAttemptRepo = {
+    findOne: jest.fn(),
+    findOneOrFail: jest.fn(),
+    save: jest.fn(),
+  };
+
   const mockExternalApplicantRepo = {
     findOne: jest.fn(),
     save: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
   };
 
   const mockExternalInviteRepo = {
     find: jest.fn(),
+    findOne: jest.fn().mockResolvedValue(null),
     save: jest.fn(),
   };
 
   const mockExternalSubmissionRepo = {
+    find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn(),
     save: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
   };
 
   const mockNotificationDispatch = {
@@ -134,9 +171,15 @@ describe('EmployerAssessmentsService', () => {
     send: jest.fn(),
   };
 
+  const mockBilling = {
+    getUnlockedIds: jest.fn().mockResolvedValue(new Set()),
+    spendInvites: jest.fn().mockResolvedValue({ invites_remaining: 9 }),
+    refundInvites: jest.fn().mockResolvedValue(undefined),
+  };
+
   const mockCatalogueRepo = {
     findOne: jest.fn(),
-    findAndCount: jest.fn(),
+    find: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -160,8 +203,12 @@ describe('EmployerAssessmentsService', () => {
           useValue: mockSubmissionRepo,
         },
         {
-          provide: getRepositoryToken(AssessmentQuestion),
-          useValue: mockBankQuestionRepo,
+          provide: getRepositoryToken(EmployerAssessmentAttempt),
+          useValue: mockAttemptRepo,
+        },
+        {
+          provide: getRepositoryToken(CredlaneCatalogueQuestion),
+          useValue: mockCatalogueQuestionRepo,
         },
         {
           provide: getRepositoryToken(EmployerSavedCandidate),
@@ -204,6 +251,10 @@ describe('EmployerAssessmentsService', () => {
           useValue: mockNotificationDispatch,
         },
         {
+          provide: EmployerBillingService,
+          useValue: mockBilling,
+        },
+        {
           provide: MailService,
           useValue: mockMailService,
         },
@@ -222,6 +273,13 @@ describe('EmployerAssessmentsService', () => {
       EmployerAssessmentsService,
     );
     jest.clearAllMocks();
+    // Aggregates need real query builders; default to "no activity".
+    jest
+      .spyOn(
+        service as unknown as { loadAssessmentStats: () => Promise<unknown> },
+        'loadAssessmentStats',
+      )
+      .mockResolvedValue(new Map());
   });
 
   // ─── createAssessment ──────────────────────────────────────────────────────
@@ -455,7 +513,7 @@ describe('EmployerAssessmentsService', () => {
       expect(result.title).toBe('Frontend Assessment');
       expect(result.questions).toHaveLength(1);
       expect(result.questions[0].question_text).toBe('What is React?');
-      expect(result.shareUrl).toContain('/assessments/token-abc');
+      expect(result.shareUrl).toContain('/assessment/token-abc');
       expect(mockAssessmentRepo.findOne).toHaveBeenCalledWith({
         where: { id: 'ass-1', employer_user_id: 'emp-1' },
         relations: ['questions'],
@@ -915,8 +973,81 @@ describe('EmployerAssessmentsService', () => {
 
   // ─── listResults ───────────────────────────────────────────────────────────
 
+  describe('getEmployerOverview', () => {
+    const verified = () =>
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+    const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
+
+    it('returns zeros when the employer has no assessments', async () => {
+      verified();
+      mockAssessmentRepo.find.mockResolvedValue([]);
+
+      const result = await service.getEmployerOverview('emp-1');
+
+      expect(result.last30Days.assessed).toBe(0);
+      expect(result.recent).toEqual([]);
+    });
+
+    it('summarises the last 30 days and lists the latest completions', async () => {
+      verified();
+      mockAssessmentRepo.find.mockResolvedValue([
+        { id: 'a-1', title: 'Frontend', is_active: true },
+        { id: 'a-2', title: 'Backend', is_active: false },
+      ]);
+      mockSubmissionRepo.find.mockResolvedValue([
+        {
+          id: 's-1',
+          assessment_id: 'a-1',
+          candidate: { first_name: 'Ada', last_name: 'Obi' },
+          score: 90,
+          passed: true,
+          integrity_level: 'clean',
+          completed_at: daysAgo(1),
+        },
+        {
+          id: 's-old',
+          assessment_id: 'a-1',
+          candidate: null,
+          score: 10,
+          passed: false,
+          integrity_level: null,
+          completed_at: daysAgo(60),
+        },
+      ]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([
+        {
+          id: 'e-1',
+          assessment_id: 'a-2',
+          external_applicant: { email: 'x@y.co' },
+          score: 40,
+          passed: false,
+          integrity_level: 'flagged',
+          submitted_at: daysAgo(2),
+        },
+      ]);
+
+      const result = await service.getEmployerOverview('emp-1');
+
+      expect(result.activeAssessments).toBe(1);
+      expect(result.last30Days).toEqual({
+        assessed: 2,
+        passRate: 50,
+        averageScore: 65,
+        needsReview: 1,
+      });
+      expect(result.recent.map((r) => r.id)).toEqual(['s-1', 'e-1', 's-old']);
+      expect(result.recent[1]).toMatchObject({
+        assessmentTitle: 'Backend',
+        email: 'x@y.co',
+      });
+    });
+  });
+
   describe('listResults', () => {
-    it('should return results filtered by pass/fail status', async () => {
+    const verifiedEmployer = () => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
         is_verified: true,
@@ -925,20 +1056,66 @@ describe('EmployerAssessmentsService', () => {
         id: 'ass-1',
         employer_user_id: 'emp-1',
       });
+    };
 
-      const submissions = [
-        {
-          id: 'sub-1',
-          candidate_user_id: 'c-1',
-          candidate: { first_name: 'John', last_name: 'Doe' },
-          score: 80,
-          passed: true,
-          time_taken_seconds: 600,
-          completed_at: new Date(),
-          delivery_mode: EmployerAssessmentDeliveryMode.LINK,
-        },
-      ];
-      mockSubmissionRepo.findAndCount.mockResolvedValue([submissions, 1]);
+    const talentSubmission = (
+      id: string,
+      score: number,
+      passed: boolean,
+      first = 'John',
+    ) => ({
+      id,
+      candidate_user_id: `u-${id}`,
+      candidate: { first_name: first, last_name: 'Doe' },
+      score,
+      passed,
+      time_taken_seconds: 600,
+      completed_at: new Date('2026-01-02T00:00:00Z'),
+      delivery_mode: EmployerAssessmentDeliveryMode.LINK,
+    });
+
+    const externalSubmission = (
+      id: string,
+      score: number,
+      passed: boolean,
+    ) => ({
+      id,
+      score,
+      passed,
+      external_applicant: { email: `${id}@mail.com` },
+      submitted_at: new Date('2026-01-03T00:00:00Z'),
+    });
+
+    it('marks link takers who joined SkillSift with a verified account', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([
+        externalSubmission('joined', 80, true),
+        externalSubmission('guest', 50, false),
+      ]);
+      mockUserQb.getMany.mockResolvedValueOnce([
+        { id: 'user-9', email: 'Joined@Mail.com' },
+      ]);
+
+      const result = await service.listResults('emp-1', 'ass-1', {});
+
+      const byEmail = Object.fromEntries(
+        result.submissions.map((r) => [r.email, r.joinedSkillsiftUserId]),
+      );
+      expect(byEmail['joined@mail.com']).toBe('user-9');
+      expect(byEmail['guest@mail.com']).toBeNull();
+      expect(mockUserQb.andWhere).toHaveBeenCalledWith(
+        'user.is_verified = true',
+      );
+    });
+
+    it('should return results filtered by pass/fail status', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([
+        talentSubmission('s1', 80, true),
+        talentSubmission('s2', 40, false, 'Jane'),
+      ]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([]);
 
       const result = await service.listResults('emp-1', 'ass-1', {
         status: 'pass',
@@ -947,9 +1124,444 @@ describe('EmployerAssessmentsService', () => {
       expect(result.submissions[0].candidateName).toBe('John Doe');
       expect(result.submissions[0].status).toBe('pass');
       expect(result.total).toBe(1);
+      expect(result.summary.total).toBe(2);
+    });
+
+    it('should include external takers, ranked together with talent', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([
+        talentSubmission('s1', 70, true),
+      ]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([
+        externalSubmission('e1', 90, true),
+        externalSubmission('e2', 50, false),
+      ]);
+
+      const result = await service.listResults('emp-1', 'ass-1', {});
+
+      expect(result.submissions.map((r) => r.id)).toEqual(['e1', 's1', 'e2']);
+      expect(result.submissions[0]).toMatchObject({
+        source: 'external',
+        email: 'e1@mail.com',
+        candidateName: null,
+        rank: 1,
+        percentile: 100,
+      });
+      expect(result.submissions[1].rank).toBe(2);
+      expect(result.summary).toMatchObject({
+        total: 3,
+        averageScore: 70,
+        medianScore: 70,
+        topScore: 90,
+        passRate: 67,
+      });
+    });
+
+    it('should give tied scores the same rank and hide percentile under 3', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([
+        talentSubmission('s1', 80, true),
+        talentSubmission('s2', 80, true),
+      ]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([]);
+
+      const result = await service.listResults('emp-1', 'ass-1', {});
+
+      expect(result.submissions.map((r) => r.rank)).toEqual([1, 1]);
+      expect(result.submissions[0].percentile).toBeNull();
     });
 
     it('should return empty state when no submissions exist', async () => {
+      verifiedEmployer();
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([]);
+
+      const result = await service.listResults('emp-1', 'ass-1', {});
+
+      expect(result.emptyState).toContain('No submissions yet');
+      expect(result.summary.averageScore).toBeNull();
+    });
+  });
+
+  describe('server-side timing and integrity', () => {
+    const assessment = {
+      id: 'ass-1',
+      is_active: true,
+      share_token: 'token-abc',
+      type: 'external',
+      access_code: 'ABC123',
+      passing_threshold: 60,
+      time_limit_minutes: 10,
+      employer_user_id: 'employer-1',
+      questions: [
+        {
+          id: 'q-1',
+          correct_answer: 'A',
+          question_text: 'Q1',
+          question_type: EmployerQuestionType.MULTIPLE_CHOICE,
+        },
+      ],
+    };
+    const secondsAgo = (n: number) => new Date(Date.now() - n * 1000);
+    const submitDto = {
+      externalApplicantId: 'app-1',
+      responses: [
+        { moduleId: 'ass-1', answers: [{ questionId: 'q-1', answer: 'A' }] },
+      ],
+    } as unknown as Parameters<typeof service.submitExternalAssessment>[2];
+
+    beforeEach(() => {
+      mockAssessmentRepo.findOne.mockResolvedValue(assessment);
+      mockExternalSubmissionRepo.findOne.mockResolvedValue(null);
+      mockExternalSubmissionRepo.save.mockImplementation(
+        async (data: Record<string, unknown>) => ({ id: 'sub-1', ...data }),
+      );
+      mockExternalApplicantRepo.count.mockResolvedValue(0);
+      mockEmployerProfileRepo.findOne.mockResolvedValue(null);
+      mockUserRepo.findOne.mockResolvedValue(null);
+    });
+
+    it('measures external time from registration, not from the client', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue({
+        id: 'app-1',
+        email: 'a@b.co',
+        ip_hash: null,
+        created_at: secondsAgo(120),
+        session_expires_at: new Date(Date.now() + 100000),
+      });
+
+      await service.submitExternalAssessment('token-abc', 'sess', {
+        ...submitDto,
+        integrity: {
+          tabSwitches: 0,
+          awaySeconds: 0,
+          pasteAttempts: 0,
+          copyAttempts: 0,
+        },
+      } as typeof submitDto);
+
+      const saved = mockExternalSubmissionRepo.save.mock.calls[0][0] as {
+        time_taken_seconds: number;
+        integrity_level: string;
+      };
+      expect(saved.time_taken_seconds).toBeGreaterThanOrEqual(119);
+      expect(saved.time_taken_seconds).toBeLessThanOrEqual(122);
+      expect(saved.integrity_level).toBe('clean');
+    });
+
+    it('flags an external submission finished impossibly fast', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue({
+        id: 'app-1',
+        email: 'a@b.co',
+        ip_hash: null,
+        created_at: secondsAgo(1),
+        session_expires_at: new Date(Date.now() + 100000),
+      });
+
+      await service.submitExternalAssessment('token-abc', 'sess', submitDto);
+
+      const saved = mockExternalSubmissionRepo.save.mock.calls[0][0] as {
+        integrity_level: string;
+      };
+      expect(saved.integrity_level).toBe('flagged');
+    });
+
+    it('marks a shared network for review, never flagged on its own', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue({
+        id: 'app-1',
+        email: 'a@b.co',
+        ip_hash: 'hash',
+        created_at: secondsAgo(120),
+        session_expires_at: new Date(Date.now() + 100000),
+      });
+      mockExternalApplicantRepo.count.mockResolvedValue(2);
+
+      await service.submitExternalAssessment('token-abc', 'sess', submitDto);
+
+      const saved = mockExternalSubmissionRepo.save.mock.calls[0][0] as {
+        integrity_level: string;
+      };
+      expect(saved.integrity_level).toBe('review');
+    });
+
+    it('turns away a candidate with the wrong access code', async () => {
+      await expect(
+        service.registerExternalApplicant('token-abc', {
+          email: 'x@y.co',
+          consentedMarketing: false,
+          fullName: 'Test Taker',
+          accessCode: 'WRONG1',
+        }),
+      ).rejects.toThrow('access code');
+      expect(mockExternalApplicantRepo.save).not.toHaveBeenCalled();
+      expect(mockBilling.spendInvites).not.toHaveBeenCalled();
+    });
+
+    it('stores the name and releases the questions after a correct sign in', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue(null);
+      mockExternalApplicantRepo.save.mockImplementation(
+        async (data: Record<string, unknown>) => ({
+          id: 'app-1',
+          created_at: new Date(),
+          ...data,
+        }),
+      );
+      const result = await service.registerExternalApplicant('token-abc', {
+        email: 'x@y.co',
+        consentedMarketing: false,
+        fullName: '  Ada   Lovelace ',
+        accessCode: 'abc123',
+      });
+      const saved = mockExternalApplicantRepo.save.mock.calls[0][0] as {
+        full_name: string;
+      };
+      expect(saved.full_name).toBe('Ada Lovelace');
+      expect(Array.isArray(result.questions)).toBe(true);
+    });
+
+    it('stores only a hash of the applicant ip on registration', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue(null);
+      mockExternalApplicantRepo.save.mockImplementation(
+        async (data: Record<string, unknown>) => ({
+          id: 'app-1',
+          created_at: new Date(),
+          ...data,
+        }),
+      );
+
+      const result = await service.registerExternalApplicant(
+        'token-abc',
+        {
+          email: 'A@B.co',
+          consentedMarketing: false,
+          fullName: 'Test Taker',
+          accessCode: 'abc123',
+        },
+        '203.0.113.9',
+      );
+
+      const saved = mockExternalApplicantRepo.save.mock.calls[0][0] as {
+        ip_hash: string;
+      };
+      expect(saved.ip_hash).toMatch(/^[a-f0-9]{64}$/);
+      expect(saved.ip_hash).not.toContain('203.0.113.9');
+      expect(result.remaining_seconds).toBe(600);
+      expect(result.submitted).toBe(false);
+    });
+
+    it('resumes a returning applicant with the time left', async () => {
+      mockExternalApplicantRepo.findOne.mockResolvedValue({
+        id: 'app-1',
+        email: 'a@b.co',
+        session_token: 'sess',
+        created_at: secondsAgo(100),
+      });
+
+      const result = await service.registerExternalApplicant('token-abc', {
+        email: 'a@b.co',
+        consentedMarketing: false,
+        fullName: 'Test Taker',
+        accessCode: 'ABC123',
+      });
+
+      expect(result.remaining_seconds).toBeGreaterThanOrEqual(498);
+      expect(result.remaining_seconds).toBeLessThanOrEqual(500);
+    });
+
+    it('starts a talent attempt once and resumes it afterwards', async () => {
+      mockSubmissionRepo.count.mockResolvedValue(0);
+      const startedAt = secondsAgo(60);
+      mockAttemptRepo.findOne.mockResolvedValueOnce(null);
+      mockAttemptRepo.save.mockResolvedValue({ started_at: startedAt });
+
+      const first = await service.startAssessment('cand-1', 'token-abc');
+      expect(mockAttemptRepo.save).toHaveBeenCalledTimes(1);
+      expect(first.time_limit_seconds).toBe(600);
+
+      mockAttemptRepo.findOne.mockResolvedValueOnce({ started_at: startedAt });
+      const again = await service.startAssessment('cand-1', 'token-abc');
+      expect(mockAttemptRepo.save).toHaveBeenCalledTimes(1);
+      expect(again.remaining_seconds).toBeLessThanOrEqual(540);
+    });
+
+    it('blocks talent who were not invited to an internal assessment', async () => {
+      mockAssessmentRepo.findOne.mockResolvedValue({
+        id: 'a1',
+        share_token: 'token-abc',
+        is_active: true,
+        type: 'internal',
+        time_limit_minutes: 10,
+      });
+      mockInviteRepo.count.mockResolvedValue(0);
+      await expect(
+        service.startAssessment('cand-1', 'token-abc'),
+      ).rejects.toThrow('only open to talent');
+      await expect(
+        service.submitAssessment('cand-1', 'token-abc', {
+          timeTakenSeconds: 300,
+          deliveryMode: EmployerAssessmentDeliveryMode.LINK,
+          answers: {},
+        }),
+      ).rejects.toThrow('only open to talent');
+      expect(mockAttemptRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('refuses to start an already submitted talent assessment', async () => {
+      mockSubmissionRepo.count.mockResolvedValue(1);
+      await expect(
+        service.startAssessment('cand-1', 'token-abc'),
+      ).rejects.toThrow('already submitted');
+    });
+  });
+
+  describe('invite metering', () => {
+    const externalAssessment = {
+      id: 'ass-1',
+      is_active: true,
+      type: 'external',
+      share_token: 'token-abc',
+      access_code: 'ABC123',
+      questions: [],
+      employer_user_id: 'employer-1',
+      time_limit_minutes: 10,
+    };
+
+    beforeEach(() => {
+      mockBilling.spendInvites.mockResolvedValue({ invites_remaining: 9 });
+      mockAssessmentRepo.findOne.mockResolvedValue(externalAssessment);
+      mockExternalApplicantRepo.findOne.mockResolvedValue(null);
+      mockExternalApplicantRepo.save.mockImplementation(
+        async (data: Record<string, unknown>) => ({
+          id: 'app-1',
+          created_at: new Date(),
+          ...data,
+        }),
+      );
+    });
+
+    it('charges one invite when an uninvited candidate starts via the link', async () => {
+      mockExternalInviteRepo.findOne.mockResolvedValue(null);
+
+      await service.registerExternalApplicant('token-abc', {
+        email: 'new@x.co',
+        consentedMarketing: false,
+        fullName: 'Test Taker',
+        accessCode: 'ABC123',
+      });
+
+      expect(mockBilling.spendInvites).toHaveBeenCalledWith('employer-1', 1);
+    });
+
+    it('does not charge again for a candidate who was invited by email', async () => {
+      mockExternalInviteRepo.findOne.mockResolvedValue({ id: 'inv-1' });
+
+      await service.registerExternalApplicant('token-abc', {
+        email: 'invited@x.co',
+        consentedMarketing: false,
+        fullName: 'Test Taker',
+        accessCode: 'ABC123',
+      });
+
+      expect(mockBilling.spendInvites).not.toHaveBeenCalled();
+    });
+
+    it('turns candidates away politely when the employer is out of invites', async () => {
+      mockExternalInviteRepo.findOne.mockResolvedValue(null);
+      mockBilling.spendInvites.mockRejectedValue(
+        new PaymentRequiredError('No invites left'),
+      );
+
+      await expect(
+        service.registerExternalApplicant('token-abc', {
+          email: 'late@x.co',
+          consentedMarketing: false,
+          fullName: 'Test Taker',
+          accessCode: 'ABC123',
+        }),
+      ).rejects.toThrow("isn't taking new candidates");
+      expect(mockExternalApplicantRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('charges per new email, skips repeats, and refunds bounced emails', async () => {
+      mockExternalInviteRepo.find.mockResolvedValue([{ email: 'old@x.co' }]);
+      mockExternalInviteRepo.save.mockResolvedValue([]);
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'employer-1',
+        is_verified: true,
+      });
+      mockMailService.send
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('bounce'));
+
+      const result = await service.inviteAssessment('employer-1', 'ass-1', {
+        emails: ['old@x.co', 'a@x.co', 'b@x.co'],
+      } as Parameters<typeof service.inviteAssessment>[2]);
+
+      expect(mockBilling.spendInvites).toHaveBeenCalledWith('employer-1', 2);
+      expect(mockBilling.refundInvites).toHaveBeenCalledWith('employer-1', 1);
+      expect(result.invited_count).toBe(1);
+    });
+
+    it('only invites job-ready talent who finished the job evaluation', async () => {
+      mockAssessmentRepo.findOne.mockResolvedValue({
+        id: 'ass-1',
+        type: 'internal',
+        title: 'T',
+      });
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'employer-1',
+        is_verified: true,
+      });
+      mockInviteRepo.find.mockResolvedValue([]);
+      mockInviteRepo.save.mockResolvedValue([]);
+      (mockUserRepo as unknown as { findBy: jest.Mock }).findBy = jest
+        .fn()
+        .mockResolvedValue([{ id: 'talent-ok' }]);
+      const rows = [{ id: 'talent-ok' }];
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue(rows),
+      };
+      (
+        mockPoolProfileRepo as unknown as { createQueryBuilder: jest.Mock }
+      ).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      const result = await service.inviteAssessment('employer-1', 'ass-1', {
+        talentIds: ['talent-ok', 'talent-unfinished'],
+      } as Parameters<typeof service.inviteAssessment>[2]);
+
+      expect(result.invited_count).toBe(1);
+      expect(result.failed).toEqual([
+        { target: 'talent-unfinished', reason: 'Talent not found' },
+      ]);
+      expect(mockBilling.spendInvites).toHaveBeenCalledWith('employer-1', 1);
+    });
+
+    it('sends nothing when the employer cannot cover the batch', async () => {
+      mockExternalInviteRepo.find.mockResolvedValue([]);
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'employer-1',
+        is_verified: true,
+      });
+      mockBilling.spendInvites.mockRejectedValue(
+        new PaymentRequiredError('Not enough invites'),
+      );
+      mockMailService.send.mockClear();
+
+      await expect(
+        service.inviteAssessment('employer-1', 'ass-1', {
+          emails: ['a@x.co'],
+        } as Parameters<typeof service.inviteAssessment>[2]),
+      ).rejects.toThrow('Not enough invites');
+      expect(mockMailService.send).not.toHaveBeenCalled();
+      expect(mockExternalInviteRepo.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getResultDetail', () => {
+    it('should mark each question right or wrong for an external taker', async () => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
         is_verified: true,
@@ -957,12 +1569,106 @@ describe('EmployerAssessmentsService', () => {
       mockAssessmentRepo.findOne.mockResolvedValue({
         id: 'ass-1',
         employer_user_id: 'emp-1',
+        questions: [
+          {
+            id: 'q2',
+            position: 2,
+            question_text: 'Second',
+            question_type: 'true_false',
+            options: null,
+            correct_answer: 'false',
+          },
+          {
+            id: 'q1',
+            position: 1,
+            question_text: 'First',
+            question_type: 'multiple_choice',
+            options: ['a', 'b'],
+            correct_answer: 'a',
+          },
+        ],
       });
-      mockSubmissionRepo.findAndCount.mockResolvedValue([[], 0]);
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      const external = {
+        id: 'e1',
+        score: 50,
+        passed: false,
+        external_applicant: { email: 'x@mail.com' },
+        submitted_at: new Date(),
+        responses: [
+          {
+            answers: [
+              { questionId: 'q1', answer: 'a' },
+              { questionId: 'q2', answer: 'true' },
+            ],
+          },
+        ],
+      };
+      mockExternalSubmissionRepo.find.mockResolvedValue([external]);
+      mockExternalSubmissionRepo.findOne.mockResolvedValue(external);
 
-      const result = await service.listResults('emp-1', 'ass-1', {});
+      const result = await service.getResultDetail('emp-1', 'ass-1', 'e1');
 
-      expect(result.emptyState).toContain('No submissions yet');
+      expect(result.questions.map((q) => q.questionId)).toEqual(['q1', 'q2']);
+      expect(result.questions.map((q) => q.isCorrect)).toEqual([true, false]);
+      expect(result.correctCount).toBe(1);
+      expect(result.questionCount).toBe(2);
+    });
+
+    it('hides the correct answer for library assessments but still marks right and wrong', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockAssessmentRepo.findOne.mockResolvedValue({
+        id: 'ass-1',
+        employer_user_id: 'emp-1',
+        question_source: EmployerAssessmentQuestionSource.CREDLANE_BANK,
+        questions: [
+          {
+            id: 'q1',
+            position: 1,
+            question_text: 'First',
+            question_type: 'multiple_choice',
+            options: ['a', 'b'],
+            correct_answer: 'a',
+          },
+        ],
+      });
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      const external = {
+        id: 'e1',
+        score: 0,
+        passed: false,
+        external_applicant: { email: 'x@mail.com' },
+        submitted_at: new Date(),
+        responses: [{ answers: [{ questionId: 'q1', answer: 'b' }] }],
+      };
+      mockExternalSubmissionRepo.find.mockResolvedValue([external]);
+      mockExternalSubmissionRepo.findOne.mockResolvedValue(external);
+
+      const result = await service.getResultDetail('emp-1', 'ass-1', 'e1');
+
+      expect(result.questions[0].isCorrect).toBe(false);
+      expect(result.questions[0].correctAnswer).toBeNull();
+    });
+
+    it('should 404 when the submission is not on this assessment', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockAssessmentRepo.findOne.mockResolvedValue({
+        id: 'ass-1',
+        employer_user_id: 'emp-1',
+        questions: [],
+      });
+      mockSubmissionRepo.find.mockResolvedValue([]);
+      mockExternalSubmissionRepo.find.mockResolvedValue([]);
+
+      await expect(
+        service.getResultDetail('emp-1', 'ass-1', 'nope'),
+      ).rejects.toThrow('Submission not found');
     });
   });
 
@@ -991,9 +1697,39 @@ describe('EmployerAssessmentsService', () => {
         },
       ]);
 
+      jest
+        .spyOn(
+          service as unknown as { loadAssessmentStats: () => Promise<unknown> },
+          'loadAssessmentStats',
+        )
+        .mockResolvedValue(
+          new Map([
+            [
+              'ass-1',
+              {
+                talents: 4,
+                submissions: 2,
+                passed: 1,
+                lastActivityAt: new Date('2026-05-03T00:00:00.000Z'),
+              },
+            ],
+          ]),
+        );
+
       const result = await service.listAssessments('emp-1');
 
       expect(result.assessments).toHaveLength(2);
+      expect(result.assessments[0]).toMatchObject({
+        submission_count: 2,
+        talents_count: 4,
+        pass_rate: 50,
+      });
+      expect(result.assessments[1]).toMatchObject({
+        submission_count: 0,
+        talents_count: 0,
+        pass_rate: null,
+        last_activity_at: null,
+      });
       expect(result.emptyState).toBeNull();
       expect(mockAssessmentRepo.find).toHaveBeenCalledWith({
         where: { employer_user_id: 'emp-1' },
@@ -1065,13 +1801,11 @@ describe('EmployerAssessmentsService', () => {
         candidates: [
           {
             candidateUserId: 'candidate-1',
-            fullName: 'Ada Lovelace',
-            email: 'ada@example.com',
+            fullName: 'Ada L.',
           },
           {
             candidateUserId: 'candidate-2',
-            fullName: 'Grace Hopper',
-            email: 'grace@example.com',
+            fullName: 'Grace H.',
           },
         ],
         total: 2,
@@ -1185,44 +1919,82 @@ describe('EmployerAssessmentsService', () => {
   // ─── listCredlaneCatalogue ──────────────────────────────────────────────────
 
   describe('listCredlaneCatalogue', () => {
-    it('should return paginated catalogue entries mapped to DTO shape', async () => {
+    const entry = (
+      id: string,
+      level = EmployerAssessmentExperienceLevel.JUNIOR,
+    ) => ({
+      id,
+      title: 'Frontend – Mid',
+      description: 'Basics',
+      estimated_completion_time: '20 minutes',
+      role_track: 'frontend_developer',
+      experience_level: level,
+      is_active: true,
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    beforeEach(() => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
         is_verified: true,
       });
-      const entries = [
-        {
-          id: 'cat-1',
-          title: 'Backend – Junior',
-          description: 'Basics',
-          estimated_completion_time: '20 minutes',
-          role_track: 'backend_developer',
-          experience_level: EmployerAssessmentExperienceLevel.JUNIOR,
-          is_active: true,
-          created_at: new Date(),
-          updated_at: new Date(),
-        },
-      ];
-      mockCatalogueRepo.findAndCount.mockResolvedValue([entries, 1]);
+    });
+
+    it('lists usable entries with a question count and no internal fields', async () => {
+      mockCatalogueRepo.find.mockResolvedValue([entry('cat-1')]);
+      mockCatalogueQuestionQb.getRawMany.mockResolvedValue([
+        { id: 'cat-1', count: '8' },
+      ]);
 
       const result = await service.listCredlaneCatalogue('emp-1', 1, 20);
 
-      expect(result.catalogue).toHaveLength(1);
-      expect(result.catalogue[0]).toEqual({
-        id: 'cat-1',
-        title: 'Backend – Junior',
-        description: 'Basics',
-        estimated_completion_time: '20 minutes',
-        role_track: 'backend_developer',
-        experience_level: EmployerAssessmentExperienceLevel.JUNIOR,
-      });
-      // Should not expose internal fields
-      expect(result.catalogue[0]).not.toHaveProperty('is_active');
-      expect(result.catalogue[0]).not.toHaveProperty('created_at');
+      expect(result.catalogue).toEqual([
+        {
+          id: 'cat-1',
+          title: 'Frontend – Mid',
+          description: 'Basics',
+          estimated_completion_time: '20 minutes',
+          role_track: 'frontend_developer',
+          experience_level: EmployerAssessmentExperienceLevel.JUNIOR,
+          question_count: 8,
+        },
+      ]);
       expect(result.total).toBe(1);
-      expect(result.page).toBe(1);
-      expect(result.limit).toBe(20);
-      expect(result.totalPages).toBe(1);
+    });
+
+    it('hides entries that do not have enough questions yet', async () => {
+      mockCatalogueRepo.find.mockResolvedValue([
+        entry('cat-1'),
+        entry('cat-2'),
+      ]);
+      mockCatalogueQuestionQb.getRawMany.mockResolvedValue([
+        { id: 'cat-1', count: '4' },
+      ]);
+
+      const result = await service.listCredlaneCatalogue('emp-1', 1, 20);
+
+      expect(result.catalogue).toHaveLength(0);
+      expect(result.total).toBe(0);
+    });
+
+    it('filters by track and level', async () => {
+      mockCatalogueRepo.find.mockResolvedValue([]);
+
+      await service.listCredlaneCatalogue('emp-1', 1, 20, {
+        roleTrack: 'frontend_developer',
+        experienceLevel: EmployerAssessmentExperienceLevel.MID,
+      });
+
+      expect(mockCatalogueRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            is_active: true,
+            role_track: 'frontend_developer',
+            experience_level: EmployerAssessmentExperienceLevel.MID,
+          },
+        }),
+      );
     });
 
     it('should reject unverified employers', async () => {
@@ -1234,6 +2006,55 @@ describe('EmployerAssessmentsService', () => {
       await expect(
         service.listCredlaneCatalogue('emp-1', 1, 20),
       ).rejects.toThrow('Only verified employers');
+    });
+  });
+
+  describe('getCredlaneCatalogueEntry', () => {
+    const questions = Array.from({ length: 5 }, (_, i) => ({
+      position: i + 1,
+      question_text: `Q${i + 1}`,
+      question_type: 'multiple_choice',
+      options: ['a', 'b', 'c', 'd'],
+      correct_answer: 'a',
+    }));
+
+    beforeEach(() => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+    });
+
+    it('returns the questions without any answer key', async () => {
+      mockCatalogueRepo.findOne.mockResolvedValue({
+        id: 'cat-1',
+        title: 'T',
+        description: null,
+        estimated_completion_time: '20 minutes',
+        role_track: 'frontend_developer',
+        experience_level: EmployerAssessmentExperienceLevel.MID,
+      });
+      mockCatalogueQuestionRepo.find.mockResolvedValue(questions);
+
+      const result = await service.getCredlaneCatalogueEntry('emp-1', 'cat-1');
+
+      expect(result.question_count).toBe(5);
+      expect(result.questions[0]).toEqual({
+        position: 1,
+        questionText: 'Q1',
+        questionType: 'multiple_choice',
+        options: ['a', 'b', 'c', 'd'],
+      });
+      expect(JSON.stringify(result)).not.toContain('correct');
+    });
+
+    it('404s for a missing or too-small entry', async () => {
+      mockCatalogueRepo.findOne.mockResolvedValue({ id: 'cat-1' });
+      mockCatalogueQuestionRepo.find.mockResolvedValue(questions.slice(0, 3));
+
+      await expect(
+        service.getCredlaneCatalogueEntry('emp-1', 'cat-1'),
+      ).rejects.toThrow('Library assessment not found');
     });
   });
 
@@ -1319,6 +2140,129 @@ describe('EmployerAssessmentsService', () => {
       ).rejects.toThrow('does not match the specified role track');
     });
 
+    it('should reject a library assessment with too few questions', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockCatalogueRepo.findOne.mockResolvedValue({
+        id: '00000000-0000-0000-0000-000000000001',
+        role_track: 'backend_developer',
+        experience_level: EmployerAssessmentExperienceLevel.MID,
+        is_active: true,
+      });
+      mockCatalogueQuestionRepo.find.mockResolvedValue([
+        {
+          question_text: 'Only one',
+          question_type: 'multiple_choice',
+          options: ['A', 'B'],
+          correct_answer: 'A',
+          position: 1,
+        },
+      ]);
+
+      await expect(
+        service.createAssessment('emp-1', {
+          ...credlaneBankDto,
+          credlaneAssessmentId: '00000000-0000-0000-0000-000000000001',
+        }),
+      ).rejects.toThrow('does not have enough questions');
+    });
+
+    it('should reject asking for more questions than the library entry has', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockCatalogueRepo.findOne.mockResolvedValue({
+        id: '00000000-0000-0000-0000-000000000001',
+        role_track: 'backend_developer',
+        experience_level: EmployerAssessmentExperienceLevel.MID,
+        is_active: true,
+      });
+      mockCatalogueQuestionRepo.find.mockResolvedValue(
+        Array.from({ length: 6 }, (_, i) => ({
+          question_text: `Library Q${i + 1}`,
+          question_type: 'multiple_choice',
+          options: ['A', 'B', 'C', 'D'],
+          correct_answer: 'A',
+          position: i + 1,
+        })),
+      );
+
+      await expect(
+        service.createAssessment('emp-1', {
+          ...credlaneBankDto,
+          credlaneAssessmentId: '00000000-0000-0000-0000-000000000001',
+          questionCount: 10,
+        }),
+      ).rejects.toThrow('only has 6 questions');
+    });
+
+    it('should copy only the requested number of library questions, in library order', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'emp-1',
+        is_verified: true,
+      });
+      mockCatalogueRepo.findOne.mockResolvedValue({
+        id: '00000000-0000-0000-0000-000000000001',
+        role_track: 'backend_developer',
+        experience_level: EmployerAssessmentExperienceLevel.MID,
+        is_active: true,
+      });
+      mockCatalogueQuestionRepo.find.mockResolvedValue(
+        Array.from({ length: 12 }, (_, i) => ({
+          question_text: `Library Q${i + 1}`,
+          question_type: 'multiple_choice',
+          options: ['A', 'B', 'C', 'D'],
+          correct_answer: 'A',
+          position: i + 1,
+        })),
+      );
+      const lockQueryBuilder = {
+        setLock: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue({ id: 'emp-1', is_verified: true }),
+      };
+      const save = jest
+        .fn()
+        .mockResolvedValueOnce({
+          id: 'assessment-3',
+          employer_user_id: 'emp-1',
+          share_token: 'tok',
+          is_active: true,
+        })
+        .mockResolvedValueOnce([]);
+      mockAssessmentRepo.manager.transaction.mockImplementation(
+        async (cb: (manager: unknown) => Promise<unknown>) =>
+          cb({
+            getRepository: jest.fn().mockReturnValue({
+              createQueryBuilder: jest.fn().mockReturnValue(lockQueryBuilder),
+            }),
+            count: jest.fn().mockResolvedValue(0),
+            save,
+          }),
+      );
+
+      await service.createAssessment('emp-1', {
+        ...credlaneBankDto,
+        credlaneAssessmentId: '00000000-0000-0000-0000-000000000001',
+        questionCount: 7,
+      });
+
+      const copied = save.mock.calls[1][1] as Array<{
+        question_text: string;
+        position: number;
+      }>;
+      expect(copied).toHaveLength(7);
+      expect(copied.map((q) => q.position)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      const sourceNumbers = copied.map((q) =>
+        Number(q.question_text.replace('Library Q', '')),
+      );
+      expect(sourceNumbers).toEqual([...sourceNumbers].sort((a, b) => a - b));
+      expect(new Set(sourceNumbers).size).toBe(7);
+    });
+
     it('should create an assessment from credlane_bank with valid catalogue item', async () => {
       mockUserRepo.findOne.mockResolvedValue({
         id: 'emp-1',
@@ -1330,13 +2274,13 @@ describe('EmployerAssessmentsService', () => {
         experience_level: EmployerAssessmentExperienceLevel.MID,
         is_active: true,
       });
-      mockBankQuestionRepo.find.mockResolvedValue(
-        Array.from({ length: 10 }, (_, i) => ({
-          question_text: `Bank Q${i + 1}`,
+      mockCatalogueQuestionRepo.find.mockResolvedValue(
+        Array.from({ length: 8 }, (_, i) => ({
+          question_text: `Library Q${i + 1}`,
           question_type: 'multiple_choice',
           options: ['A', 'B', 'C', 'D'],
           correct_answer: 'A',
-          question_number: i + 1,
+          position: i + 1,
         })),
       );
       const lockQueryBuilder = {
@@ -1382,7 +2326,12 @@ describe('EmployerAssessmentsService', () => {
           is_active: true,
         },
       });
-      expect(mockBankQuestionRepo.find).toHaveBeenCalled();
+      expect(mockCatalogueQuestionRepo.find).toHaveBeenCalledWith({
+        where: {
+          catalogue_assessment_id: '00000000-0000-0000-0000-000000000001',
+        },
+        order: { position: 'ASC' },
+      });
     });
   });
 });

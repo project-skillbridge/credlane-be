@@ -122,6 +122,10 @@ export class Offer {
   @Column({ type: 'timestamp with time zone', nullable: true })
   responded_at: Date | null;
 
+  /** Set once when the employer confirms they hired the candidate. */
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  hired_at: Date | null;
+
   @ApiProperty()
   @CreateDateColumn({ type: 'timestamp with time zone' })
   created_at: Date;

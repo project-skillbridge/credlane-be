@@ -36,6 +36,7 @@ import {
   UpdateTalentSettingsProfileDto,
 } from './dto/settings.dto';
 import {
+  BadRequestError,
   ConflictError,
   ErrorMessages,
   ForbiddenError,
@@ -670,6 +671,25 @@ export class TalentService {
             is_published: false,
           });
         }
+
+        // No anonymous talent: employers hire people, so a photo, a resume
+        // and a portfolio link are all required to finish onboarding.
+        if (!dto.avatarUrl && !user.avatar_url) {
+          throw new BadRequestError(
+            ErrorMessages.ONBOARDING.PROFILE_PHOTO_REQUIRED,
+          );
+        }
+        if (!talentProfile.resume_url) {
+          throw new BadRequestError(ErrorMessages.ONBOARDING.RESUME_REQUIRED);
+        }
+        const portfolio =
+          dto.portfolioUrl?.trim() || talentProfile.personal_website;
+        if (!portfolio) {
+          throw new BadRequestError(
+            ErrorMessages.ONBOARDING.PORTFOLIO_REQUIRED,
+          );
+        }
+        talentProfile.personal_website = portfolio;
 
         if (dto.region !== undefined) {
           talentProfile.region = dto.region;

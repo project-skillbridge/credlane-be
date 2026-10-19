@@ -51,4 +51,16 @@ export class SetProfileDto {
   @IsOptional()
   @IsUrl({}, { message: 'avatarUrl must be a valid URL' })
   avatarUrl?: string;
+
+  @ApiPropertyOptional({
+    example: 'https://yourname.dev',
+    description:
+      'Portfolio or personal website (required to finish onboarding)',
+  })
+  @IsOptional()
+  @IsUrl(
+    { protocols: ['http', 'https'], require_protocol: true },
+    { message: 'portfolioUrl must be a valid http(s) URL' },
+  )
+  portfolioUrl?: string;
 }

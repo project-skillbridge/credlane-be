@@ -145,17 +145,9 @@ export class DashboardService {
       this.employerSavedCandidateRepository.count({
         where: { employer_user_id: userId },
       }),
-      this.employerAssessmentSubmissionRepository
-        .createQueryBuilder('sub')
-        .innerJoin(
-          'employer_assessments',
-          'ea',
-          'ea.id = sub.assessment_id AND ea.employer_user_id = :uid',
-          { uid: userId },
-        )
-        .select('COUNT(DISTINCT sub.assessment_id)', 'cnt')
-        .getRawOne<{ cnt: string }>()
-        .then((r) => parseInt(r?.cnt ?? '0', 10)),
+      this.employerAssessmentRepository.count({
+        where: { employer_user_id: userId },
+      }),
       this.offerRepository.count({
         where: { employer_user_id: userId },
       }),
@@ -751,14 +743,24 @@ export class DashboardService {
       !profile.advanced_assessment_completed_at &&
       completedSkillAttempts >= SKILL_ASSESSMENT_MAX_ATTEMPTS;
 
+    // A passed skill result is a finished step on its own; it shouldn't wait
+    // for the advanced assessment before the roadmap shows it as done.
+    const skillPassed =
+      latestSkillResult != null &&
+      Boolean(profile.skill_assessment_completed_at) &&
+      qualifiesForAdvancedFromSkillResult(latestSkillResult);
+
     let skillStatus: DashboardJourneyStatus;
-    if (skillAttemptsExhausted || !this.canStartSkillAssessment(profile)) {
-      skillStatus = DashboardJourneyStatus.LOCKED;
-    } else if (
-      profile.advanced_assessment_completed_at &&
-      hasCompletedSkillOnce
+    if (
+      skillPassed ||
+      (profile.advanced_assessment_completed_at && hasCompletedSkillOnce)
     ) {
       skillStatus = DashboardJourneyStatus.COMPLETED;
+    } else if (
+      skillAttemptsExhausted ||
+      !this.canStartSkillAssessment(profile)
+    ) {
+      skillStatus = DashboardJourneyStatus.LOCKED;
     } else {
       skillStatus = DashboardJourneyStatus.AVAILABLE;
     }

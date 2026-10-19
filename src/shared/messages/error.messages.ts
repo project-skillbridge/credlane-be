@@ -44,10 +44,12 @@ export const ErrorMessages = {
     TRACK_MISSING:
       'track is required to start a skill assessment; please complete onboarding track step first',
     NO_QUESTIONS_AVAILABLE:
-      'No skill assessment questions are currently available for your track and level',
+      'Your next attempt is not open yet. We will notify you when you can retake it.',
     ATTEMPT_NOT_FOUND: 'Assessment attempt not found',
     ATTEMPT_ALREADY_SUBMITTED:
       'This assessment attempt has already been submitted',
+    TIME_EXPIRED:
+      'The time limit for this skill assessment ran out before it was submitted. This attempt has been used.',
     ATTEMPT_CORRUPT:
       'Assessment attempt has no questions; please start a new session',
     PASS_REQUIRED:
@@ -67,7 +69,8 @@ export const ErrorMessages = {
     SKILL_GATE_REQUIRED:
       'Complete the skill assessment before starting the advanced assessment',
     LEVEL_NOT_VERIFIED: 'LEVEL_NOT_VERIFIED',
-    BANK_EXHAUSTED: 'BANK_EXHAUSTED',
+    BANK_EXHAUSTED:
+      'Your next attempt is not open yet. We will notify you when you can retake it.',
     ACTIVE_SESSION_EXISTS: 'Active advanced assessment session already exists',
     SESSION_NOT_FOUND: 'Advanced assessment session not found',
     SESSION_CORRUPT: 'Advanced assessment session has no questions',
@@ -99,6 +102,9 @@ export const ErrorMessages = {
     CANDIDATE_PROFILE_EXISTS: 'Candidate profile already exists',
     NO_FILE: 'No file provided',
     PHOTO_REQUIRED: 'Photo is required',
+    PROFILE_PHOTO_REQUIRED: 'A profile photo is required',
+    RESUME_REQUIRED: 'A resume is required',
+    PORTFOLIO_REQUIRED: 'A portfolio or personal website link is required',
     INVALID_FILE_TYPE: 'Only image files are allowed (jpeg, png, webp)',
     INVALID_PHOTO_TYPE: 'Invalid file type, please upload a valid image',
     FILE_TOO_LARGE: 'File must be smaller than 5 MB',

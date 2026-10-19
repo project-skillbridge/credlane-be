@@ -8,6 +8,16 @@ export class ListEmployerAssessmentResultsQueryDto {
   @IsIn(['pass', 'fail'])
   status?: 'pass' | 'fail';
 
+  @ApiPropertyOptional({ enum: ['talent', 'external'] })
+  @IsOptional()
+  @IsIn(['talent', 'external'])
+  source?: 'talent' | 'external';
+
+  @ApiPropertyOptional({ enum: ['score', 'date'], default: 'score' })
+  @IsOptional()
+  @IsIn(['score', 'date'])
+  sort?: 'score' | 'date';
+
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
   @Type(() => Number)

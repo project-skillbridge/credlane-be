@@ -339,6 +339,12 @@ describe('AdvancedAssessmentService', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         getOne: jest.fn().mockResolvedValue(null),
+        insert: jest.fn().mockReturnValue({
+          into: jest.fn().mockReturnThis(),
+          values: jest.fn().mockReturnThis(),
+          orUpdate: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue(undefined),
+        }),
       }),
     };
 
@@ -450,6 +456,8 @@ describe('AdvancedAssessmentService', () => {
       rubricScoring as never,
       guidanceReport as never,
       employerPoolProfileService as never,
+      { warm: jest.fn().mockResolvedValue(undefined) } as never,
+      { notifyForCandidate: jest.fn().mockResolvedValue(undefined) } as never,
       questionGeneration as never,
       usersService as never,
       notificationDispatch as never,
@@ -1078,8 +1086,72 @@ describe('AdvancedAssessmentService', () => {
 
   // ── flag ────────────────────────────────────────────────────────────────────
 
+  describe('releaseFailedSubmit()', () => {
+    it('releases the retake lock when scoring failed for good', async () => {
+      attemptData.current.completed_at = null;
+
+      await service.releaseFailedSubmit(userId, 'attempt-1');
+
+      expect(talentProfileRepo.update).toHaveBeenCalledWith(
+        { id: profileStore.id },
+        {
+          assessment_locked_from: null,
+          assessment_locked_until: null,
+          advanced_retake_required: false,
+        },
+      );
+    });
+
+    it('restores a retake requirement that existed before the submit', async () => {
+      attemptData.current.completed_at = null;
+      attemptData.current.generated_questions_json = {
+        context: {
+          submit_enqueued_at: '2026-10-01T00:00:00.000Z',
+          pre_submit_lock: {
+            locked_from: '2026-09-01T00:00:00.000Z',
+            locked_until: '2026-09-15T00:00:00.000Z',
+            retake_required: true,
+          },
+        },
+        questions: [],
+      };
+
+      await service.releaseFailedSubmit(userId, 'attempt-1');
+
+      expect(talentProfileRepo.update).toHaveBeenCalledWith(
+        { id: profileStore.id },
+        {
+          assessment_locked_from: new Date('2026-09-01T00:00:00.000Z'),
+          assessment_locked_until: new Date('2026-09-15T00:00:00.000Z'),
+          advanced_retake_required: true,
+        },
+      );
+    });
+
+    it('leaves the lock alone once the attempt has been scored', async () => {
+      attemptData.current.completed_at = new Date();
+
+      await service.releaseFailedSubmit(userId, 'attempt-1');
+
+      expect(talentProfileRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('flag()', () => {
-    it('voids session and returns logout action on tab switch', async () => {
+    it('records a violation without ending the session while under the limit', async () => {
+      const result = await service.flag(userId, 'attempt-1', {
+        eventType: IntegrityEventType.TAB_SWITCH,
+      });
+
+      expect(result.status).toBe('recorded');
+      expect(result.action).toBe('warn');
+      expect(result.sessionVoided).toBe(false);
+      expect(result.tabSwitchCount).toBe(1);
+      expect(entityManagerUpdate).not.toHaveBeenCalled();
+    });
+
+    it('voids session and returns logout action on the third tab switch', async () => {
+      attemptData.current.tab_switch_count = 2;
       const result = await service.flag(userId, 'attempt-1', {
         eventType: IntegrityEventType.TAB_SWITCH,
       });
@@ -1087,7 +1159,7 @@ describe('AdvancedAssessmentService', () => {
       expect(result.status).toBe('voided');
       expect(result.action).toBe('logout');
       expect(result.sessionVoided).toBe(true);
-      expect(result.tabSwitchCount).toBe(1);
+      expect(result.tabSwitchCount).toBe(3);
       expect(talentProfileRepo.manager.transaction).toHaveBeenCalled();
       expect(entityManagerFindOne).toHaveBeenCalledWith(
         AssessmentAttempt,
@@ -1118,6 +1190,7 @@ describe('AdvancedAssessmentService', () => {
     });
 
     it('sets 14-day retake gate when session is voided', async () => {
+      attemptData.current.tab_switch_count = 2;
       await service.flag(userId, 'attempt-1', {
         eventType: IntegrityEventType.TAB_SWITCH,
       });
@@ -1138,7 +1211,8 @@ describe('AdvancedAssessmentService', () => {
       expect(diffDays).toBe(14);
     });
 
-    it('increments copy_paste_count on COPY_PASTE and voids session', async () => {
+    it('increments copy_paste_count on COPY_PASTE and voids session at the limit', async () => {
+      attemptData.current.copy_paste_count = 2;
       const result = await service.flag(userId, 'attempt-1', {
         eventType: IntegrityEventType.COPY_PASTE,
       });
@@ -1146,7 +1220,7 @@ describe('AdvancedAssessmentService', () => {
       expect(result.status).toBe('voided');
       expect(result.action).toBe('logout');
       expect(result.sessionVoided).toBe(true);
-      expect(result.copyPasteCount).toBe(1);
+      expect(result.copyPasteCount).toBe(3);
       expect(entityManagerIncrement).toHaveBeenCalledWith(
         AssessmentAttempt,
         expect.anything(),
@@ -1508,7 +1582,15 @@ describe('AdvancedAssessmentService', () => {
                 andWhere: jest.fn().mockReturnThis(),
                 getOne: jest.fn().mockResolvedValue(null),
               })
-              .mockReturnValueOnce(activeSessionQuery),
+              .mockReturnValueOnce(activeSessionQuery)
+              .mockReturnValue({
+                insert: jest.fn().mockReturnValue({
+                  into: jest.fn().mockReturnThis(),
+                  values: jest.fn().mockReturnThis(),
+                  orUpdate: jest.fn().mockReturnThis(),
+                  execute: jest.fn().mockResolvedValue(undefined),
+                }),
+              }),
             create: jest.fn((_entity: unknown, data: unknown) => data),
             save: jest
               .fn()

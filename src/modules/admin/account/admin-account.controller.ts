@@ -1,4 +1,11 @@
-import { Controller, Get, HttpCode, HttpStatus, Post, Res } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Res,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiForbiddenResponse,
@@ -27,7 +34,9 @@ export class AdminAccountController {
   @ApiOperation({ summary: 'Revoke admin session and clear auth cookies' })
   @ApiOkResponse({ description: 'Logged out successfully' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
-  @ApiForbiddenResponse({ description: 'Caller is not an admin dashboard user' })
+  @ApiForbiddenResponse({
+    description: 'Caller is not an admin dashboard user',
+  })
   async logout(
     @CurrentUser('sub') userId: string,
     @Res({ passthrough: true }) response: Response,
@@ -73,7 +82,9 @@ export class AdminAccountController {
     },
   })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
-  @ApiForbiddenResponse({ description: 'Caller is not an admin dashboard user' })
+  @ApiForbiddenResponse({
+    description: 'Caller is not an admin dashboard user',
+  })
   async me(@CurrentUser('sub') userId: string) {
     return this.adminAccountService.getMe(userId);
   }

@@ -12,6 +12,7 @@ import { NotificationDispatchService } from '../notifications/notification-dispa
 import { NotificationType } from '../notifications/notification-type.enum';
 import { EmployerVerificationService } from '../employer/employer-verification.service';
 import { Offer, OfferStatus } from '../offers/entities/offer.entity';
+import { EmployerBillingService } from '../employer-billing/employer-billing.service';
 import { VerifiedProfileService } from '../verified-profile/verified-profile.service';
 import { EmployerCandidateProfileResponseDto } from './dto/employer-candidate-profile.dto';
 import {
@@ -45,6 +46,20 @@ type CandidateOfferStatusRow = {
   offer_status: OfferStatus.PENDING | OfferStatus.ACCEPTED;
 };
 
+/**
+ * A talent only exists for employers once they have finished the job
+ * evaluation (the advanced assessment) and landed in the job-ready tier.
+ * Seeded or imported pool rows without that history stay hidden.
+ */
+const FINISHED_JOB_EVALUATION_SQL = `EXISTS (
+  SELECT 1 FROM assessment_attempts att
+  INNER JOIN assessment_results res ON res.attempt_id = att.id
+  WHERE att.talent_profile_id = pool.talent_profile_id
+    AND att.assessment_type = 'advanced'
+    AND att.completed_at IS NOT NULL
+    AND res.tier = 'job_ready'
+)`;
+
 @Injectable()
 export class EmployerDiscoveryService {
   private readonly logger = new Logger(EmployerDiscoveryService.name);
@@ -65,6 +80,7 @@ export class EmployerDiscoveryService {
     private readonly notificationDispatch: NotificationDispatchService,
     private readonly verificationService: EmployerVerificationService,
     private readonly verifiedProfileService: VerifiedProfileService,
+    private readonly billingService: EmployerBillingService,
   ) {}
 
   async discoverCandidates(
@@ -99,10 +115,16 @@ export class EmployerDiscoveryService {
       .innerJoin(User, 'u', 'u.id = pool.candidate_id')
       .innerJoin('talent_profiles', 'tp', 'tp.id = pool.talent_profile_id')
       .where('pool.tier = :tier', { tier: 'job_ready' })
+      .andWhere(FINISHED_JOB_EVALUATION_SQL)
       .andWhere(
         '(pool.job_search_status IS NULL OR pool.job_search_status != :notLooking)',
         { notLooking: 'not_looking' },
-      );
+      )
+      // Employers only see talent with a face, a resume and a portfolio:
+      // no anonymous profiles.
+      .andWhere("COALESCE(u.avatar_url, '') != ''")
+      .andWhere("COALESCE(tp.resume_url, '') != ''")
+      .andWhere("COALESCE(tp.personal_website, '') != ''");
 
     this.applyDiscoveryFilters(qb, query);
     this.selectDiscoveryColumns(qb);
@@ -123,11 +145,18 @@ export class EmployerDiscoveryService {
       candidateIds,
     );
 
+    const unlockedIds = await this.getRevealedIds(
+      employerUserId,
+      candidateIds,
+      offerStatusMap,
+    );
+
     const candidates: CandidateCard[] = rawResults.map((r) =>
       mapDiscoveryCandidateCard(r, {
         is_saved: savedMap.has(r.userId),
         offer_sent: offerStatusMap.has(r.userId),
         offer_status: offerStatusMap.get(r.userId) ?? null,
+        is_unlocked: unlockedIds.has(r.userId),
       }),
     );
 
@@ -148,19 +177,138 @@ export class EmployerDiscoveryService {
     employerUserId: string,
     candidateUserId: string,
   ): Promise<EmployerCandidateProfileResponseDto> {
-    const [profile, savedMap, offerStatusMap] = await Promise.all([
-      this.verifiedProfileService.getForEmployerView(candidateUserId),
-      this.getSavedMap(employerUserId, [candidateUserId]),
-      this.getOfferStatusMap(employerUserId, [candidateUserId]),
-    ]);
+    const poolProfile = await this.poolProfileRepo.findOne({
+      where: { candidate_id: candidateUserId },
+      relations: ['talent_profile'],
+    });
+    if (
+      !(await this.hasFinishedJobEvaluation(poolProfile?.talent_profile_id))
+    ) {
+      throw new NotFoundError(
+        'Verified profile is only available for job-ready talents who have completed the advanced assessment',
+      );
+    }
+
+    const [profile, savedMap, offerStatusMap, hasUnlock, latestOffer] =
+      await Promise.all([
+        this.verifiedProfileService.getForEmployerView(candidateUserId),
+        this.getSavedMap(employerUserId, [candidateUserId]),
+        this.getOfferStatusMap(employerUserId, [candidateUserId]),
+        this.billingService.isUnlocked(employerUserId, candidateUserId),
+        this.offerRepo.findOne({
+          where: {
+            employer_user_id: employerUserId,
+            candidate_user_id: candidateUserId,
+          },
+          order: { created_at: 'DESC' },
+        }),
+      ]);
+
+    // A candidate who accepted this employer's invite has chosen to share
+    // their details, so it counts as unlocked at no cost.
+    const isUnlocked =
+      hasUnlock || offerStatusMap.get(candidateUserId) === OfferStatus.ACCEPTED;
+
+    // Locked: first name + last initial only; no photo, contact, resume or links.
+    const [first = '', ...rest] = profile.full_name.split(' ');
+    const lastInitial = rest.length
+      ? `${rest[rest.length - 1].charAt(0).toUpperCase()}.`
+      : '';
+    const locked = isUnlocked
+      ? {}
+      : {
+          full_name: `${first} ${lastInitial}`.trim(),
+          avatar_url: null,
+          email: '',
+          resume_url: null,
+          share_url: '',
+          qr_code_url: null,
+        };
 
     return {
       ...profile,
+      ...locked,
+      is_unlocked: isUnlocked,
+      portfolio_url: isUnlocked
+        ? (poolProfile?.talent_profile?.personal_website ?? null)
+        : null,
+      linkedin_url: isUnlocked
+        ? (poolProfile?.talent_profile?.linkedin_url ?? null)
+        : null,
+      role_track: poolProfile?.talent_profile?.track ?? null,
+      validated_level: poolProfile?.talent_profile?.validated_level ?? null,
       user_id: candidateUserId,
       is_saved: savedMap.has(candidateUserId),
       offer_sent: offerStatusMap.has(candidateUserId),
       offer_status: offerStatusMap.get(candidateUserId) ?? null,
+      pipeline: latestOffer
+        ? {
+            offer_id: latestOffer.id,
+            role_title: latestOffer.role_title,
+            status: latestOffer.status,
+            hired:
+              latestOffer.status === OfferStatus.ACCEPTED &&
+              !!latestOffer.hired_at,
+            interview_link: latestOffer.interview_link,
+            sent_at: latestOffer.created_at,
+          }
+        : null,
     };
+  }
+
+  /** True once the talent has completed the job evaluation as job ready. */
+  private async hasFinishedJobEvaluation(
+    talentProfileId: string | null | undefined,
+  ): Promise<boolean> {
+    if (!talentProfileId) return false;
+    const rows: unknown[] = await this.poolProfileRepo.manager.query(
+      `SELECT 1 FROM assessment_attempts att
+       INNER JOIN assessment_results res ON res.attempt_id = att.id
+       WHERE att.talent_profile_id = $1
+         AND att.assessment_type = 'advanced'
+         AND att.completed_at IS NOT NULL
+         AND res.tier = 'job_ready'
+       LIMIT 1`,
+      [talentProfileId],
+    );
+    return rows.length > 0;
+  }
+
+  /** Unlocked by the employer, or revealed because the talent accepted an invite. */
+  private async getRevealedIds(
+    employerUserId: string,
+    candidateIds: string[],
+    offerStatusMap: Map<string, OfferStatus>,
+  ): Promise<Set<string>> {
+    const ids = await this.billingService.getUnlockedIds(
+      employerUserId,
+      candidateIds,
+    );
+    for (const [id, status] of offerStatusMap) {
+      if (status === OfferStatus.ACCEPTED) ids.add(id);
+    }
+    return ids;
+  }
+
+  /** Spends one unlock to reveal a candidate's full profile. */
+  async unlockCandidate(
+    employerUserId: string,
+    candidateUserId: string,
+  ): Promise<{ already_unlocked: boolean; unlocks_remaining: number }> {
+    await this.verificationService.assertEmployerVerified(employerUserId);
+
+    const poolProfile = await this.poolProfileRepo.findOne({
+      where: { candidate_id: candidateUserId },
+    });
+    if (
+      !poolProfile ||
+      poolProfile.tier !== 'job_ready' ||
+      !(await this.hasFinishedJobEvaluation(poolProfile.talent_profile_id))
+    ) {
+      throw new NotFoundError('Candidate not found');
+    }
+
+    return this.billingService.unlock(employerUserId, candidateUserId);
   }
 
   async saveCandidate(
@@ -172,7 +320,10 @@ export class EmployerDiscoveryService {
       where: { candidate_id: candidateUserId },
     });
 
-    if (!poolProfile) {
+    if (
+      !poolProfile ||
+      !(await this.hasFinishedJobEvaluation(poolProfile.talent_profile_id))
+    ) {
       throw new NotFoundError('Candidate not found');
     }
 
@@ -235,7 +386,8 @@ export class EmployerDiscoveryService {
       .innerJoin(User, 'u', 'u.id = saved.candidate_user_id')
       .innerJoin('talent_profiles', 'tp', 'tp.id = pool.talent_profile_id')
       .where('saved.employer_user_id = :employerUserId', { employerUserId })
-      .andWhere('pool.tier = :tier', { tier: 'job_ready' });
+      .andWhere('pool.tier = :tier', { tier: 'job_ready' })
+      .andWhere(FINISHED_JOB_EVALUATION_SQL);
 
     this.selectDiscoveryColumns(qb, {
       includeNotes: true,
@@ -256,8 +408,15 @@ export class EmployerDiscoveryService {
       candidateIds,
     );
 
+    const unlockedIds = await this.getRevealedIds(
+      employerUserId,
+      candidateIds,
+      offerStatusMap,
+    );
+
     const candidates: CandidateCard[] = rawResults.map((r) =>
       mapDiscoveryCandidateCard(r, {
+        is_unlocked: unlockedIds.has(r.userId),
         is_saved: true,
         offer_sent: offerStatusMap.has(r.userId),
         offer_status: offerStatusMap.get(r.userId) ?? null,
@@ -291,7 +450,10 @@ export class EmployerDiscoveryService {
       where: { candidate_id: candidateUserId },
     });
 
-    if (!poolProfile) {
+    if (
+      !poolProfile ||
+      !(await this.hasFinishedJobEvaluation(poolProfile.talent_profile_id))
+    ) {
       throw new NotFoundError('Candidate not found');
     }
 
@@ -408,10 +570,18 @@ export class EmployerDiscoveryService {
       });
     }
 
-    if (query.region) {
-      qb.andWhere('(pool.location ILIKE :region OR u.country ILIKE :region)', {
-        region: `%${query.region}%`,
+    // Comma-separated list of countries/regions; a match on any one counts.
+    const regions = (query.region ?? '')
+      .split(',')
+      .map((r) => r.trim())
+      .filter(Boolean);
+    if (regions.length) {
+      const params: Record<string, string> = {};
+      const clauses = regions.map((r, i) => {
+        params[`region${i}`] = `%${r}%`;
+        return `(pool.location ILIKE :region${i} OR u.country ILIKE :region${i})`;
       });
+      qb.andWhere(`(${clauses.join(' OR ')})`, params);
     }
   }
 

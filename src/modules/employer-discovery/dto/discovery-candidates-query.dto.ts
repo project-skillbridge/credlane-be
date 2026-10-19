@@ -125,11 +125,12 @@ export class DiscoveryCandidatesQueryDto extends PaginationDto {
 
   @ApiProperty({
     required: false,
-    description: 'Filter by region or country (partial match)',
+    description:
+      'Filter by region or country (partial match); comma-separate several',
     example: 'Nigeria',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(100)
+  @MaxLength(300)
   region?: string;
 }

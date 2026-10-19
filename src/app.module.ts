@@ -49,6 +49,7 @@ import { AdminEngagementModule } from './modules/admin/engagement/admin-engageme
 import { AdminSupportModule } from './modules/admin/support/admin-support.module';
 import { AdminAccountModule } from './modules/admin/account/admin-account.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { EmployerBillingModule } from './modules/employer-billing/employer-billing.module';
 import { EmployerDiscoveryModule } from './modules/employer-discovery/employer-discovery.module';
 import { OffersModule } from './modules/offers/offers.module';
 import { EmployerAssessmentsModule } from './modules/employer-assessments/employer-assessments.module';
@@ -94,6 +95,7 @@ import { MetricsInterceptor } from './modules/metrics/metrics.interceptor';
     AdminSupportModule,
     AdminAccountModule,
     PaymentsModule,
+    EmployerBillingModule,
     EmployerDiscoveryModule,
     OffersModule,
     EmployerAssessmentsModule,

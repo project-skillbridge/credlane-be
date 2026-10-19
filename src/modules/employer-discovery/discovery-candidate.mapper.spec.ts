@@ -34,8 +34,10 @@ describe('mapDiscoveryCandidateCard', () => {
 
     expect(card).toMatchObject({
       user_id: 'user-1',
-      full_name: 'Jane Doe',
-      avatar_url: 'https://example.com/avatar.jpg',
+      full_name: 'Jane D.',
+      avatar_url: null,
+      share_token: null,
+      is_unlocked: false,
       role: 'Frontend Developer',
       role_track: 'frontend_developer',
       seniority_badge: 'Mid Level',
@@ -48,5 +50,42 @@ describe('mapDiscoveryCandidateCard', () => {
     expect(card.about_tags).toEqual(
       expect.arrayContaining(['Mid Level', 'Job Ready', 'Open to Work']),
     );
+  });
+
+  it('reveals full name, photo and share link once unlocked', () => {
+    const card = mapDiscoveryCandidateCard(
+      {
+        userId: 'user-1',
+        roleTrack: 'frontend_developer',
+        tier: 'job_ready',
+        availability: null,
+        verifiedAt: new Date('2026-05-03T00:00:00.000Z'),
+        score: 85,
+        strongCompetencies: null,
+        shareToken: 'token',
+        firstName: 'Jane',
+        lastName: 'Doe',
+        avatarUrl: 'https://example.com/avatar.jpg',
+        country: 'Nigeria',
+        verifiedLevel: 'mid',
+        location: null,
+        jobSearchStatus: null,
+        specialization: null,
+        personalAssessmentAnswers: null,
+      },
+      {
+        is_saved: false,
+        offer_sent: false,
+        offer_status: null,
+        is_unlocked: true,
+      },
+    );
+
+    expect(card).toMatchObject({
+      full_name: 'Jane Doe',
+      avatar_url: 'https://example.com/avatar.jpg',
+      share_token: 'token',
+      is_unlocked: true,
+    });
   });
 });
