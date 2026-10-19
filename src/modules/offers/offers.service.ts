@@ -856,6 +856,15 @@ export class OffersService {
       throw new NotFoundError('Offer not found');
     }
 
+    if (
+      offer.status !== OfferStatus.PENDING &&
+      offer.status !== OfferStatus.ACCEPTED
+    ) {
+      throw new BadRequestError(
+        'A meeting link can only be set on an open invite',
+      );
+    }
+
     offer.interview_link = interviewLink.trim();
     const saved = await this.offerRepo.save(offer);
     return {

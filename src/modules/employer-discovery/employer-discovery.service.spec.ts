@@ -40,6 +40,7 @@ describe('EmployerDiscoveryService', () => {
 
   const mockOfferRepo = {
     createQueryBuilder: jest.fn(),
+    findOne: jest.fn().mockResolvedValue(null),
   };
 
   const mockEmployerProfileRepo = {

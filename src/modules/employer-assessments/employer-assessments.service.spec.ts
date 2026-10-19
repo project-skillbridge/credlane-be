@@ -47,7 +47,11 @@ describe('EmployerAssessmentsService', () => {
   };
 
   const mockQuestionRepo = { save: jest.fn() };
-  const mockInviteRepo = { save: jest.fn(), count: jest.fn() };
+  const mockInviteRepo = {
+    save: jest.fn(),
+    count: jest.fn(),
+    find: jest.fn(),
+  };
 
   const mockSubmissionRepo = {
     save: jest.fn(),
@@ -1447,6 +1451,43 @@ describe('EmployerAssessmentsService', () => {
       expect(result.invited_count).toBe(1);
     });
 
+    it('only invites job-ready talent who finished the job evaluation', async () => {
+      mockAssessmentRepo.findOne.mockResolvedValue({
+        id: 'ass-1',
+        type: 'internal',
+        title: 'T',
+      });
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'employer-1',
+        is_verified: true,
+      });
+      mockInviteRepo.find.mockResolvedValue([]);
+      mockInviteRepo.save.mockResolvedValue([]);
+      (mockUserRepo as unknown as { findBy: jest.Mock }).findBy = jest
+        .fn()
+        .mockResolvedValue([{ id: 'talent-ok' }]);
+      const rows = [{ id: 'talent-ok' }];
+      const qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue(rows),
+      };
+      (
+        mockPoolProfileRepo as unknown as { createQueryBuilder: jest.Mock }
+      ).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      const result = await service.inviteAssessment('employer-1', 'ass-1', {
+        talentIds: ['talent-ok', 'talent-unfinished'],
+      } as Parameters<typeof service.inviteAssessment>[2]);
+
+      expect(result.invited_count).toBe(1);
+      expect(result.failed).toEqual([
+        { target: 'talent-unfinished', reason: 'Talent not found' },
+      ]);
+      expect(mockBilling.spendInvites).toHaveBeenCalledWith('employer-1', 1);
+    });
+
     it('sends nothing when the employer cannot cover the batch', async () => {
       mockExternalInviteRepo.find.mockResolvedValue([]);
       mockUserRepo.findOne.mockResolvedValue({
@@ -1709,11 +1750,11 @@ describe('EmployerAssessmentsService', () => {
         candidates: [
           {
             candidateUserId: 'candidate-1',
-            fullName: 'Ada Lovelace',
+            fullName: 'Ada L.',
           },
           {
             candidateUserId: 'candidate-2',
-            fullName: 'Grace Hopper',
+            fullName: 'Grace H.',
           },
         ],
         total: 2,

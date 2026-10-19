@@ -187,6 +187,16 @@ export type QuestionImportValidationResult = {
   questionCount: number;
 };
 
+/** Talent only exist for employers after finishing the job evaluation as job ready. */
+const FINISHED_JOB_EVALUATION_SQL = `EXISTS (
+  SELECT 1 FROM assessment_attempts att
+  INNER JOIN assessment_results res ON res.attempt_id = att.id
+  WHERE att.talent_profile_id = pool.talent_profile_id
+    AND att.assessment_type = 'advanced'
+    AND att.completed_at IS NOT NULL
+    AND res.tier = 'job_ready'
+)`;
+
 @Injectable()
 export class EmployerAssessmentsService {
   private readonly logger = new Logger(EmployerAssessmentsService.name);
@@ -815,13 +825,19 @@ export class EmployerAssessmentsService {
       );
       const nextTalentIds = talentIds.filter((id) => !alreadyInvited.has(id));
 
-      const users = nextTalentIds.length
-        ? await this.userRepo.findBy({ id: In(nextTalentIds) })
+      const eligible = nextTalentIds.length
+        ? await this.poolProfileRepo
+            .createQueryBuilder('pool')
+            .select('pool.candidate_id', 'id')
+            .where('pool.candidate_id IN (:...ids)', { ids: nextTalentIds })
+            .andWhere("pool.tier = 'job_ready'")
+            .andWhere(FINISHED_JOB_EVALUATION_SQL)
+            .getRawMany<{ id: string }>()
         : [];
-      const existingUsers = new Set(users.map((user) => user.id));
+      const existingUsers = new Set(eligible.map((row) => row.id));
       const failed = nextTalentIds
         .filter((id) => !existingUsers.has(id))
-        .map((id) => ({ target: id, reason: 'Talent user not found' }));
+        .map((id) => ({ target: id, reason: 'Talent not found' }));
       const invitableTalentIds = nextTalentIds.filter((id) =>
         existingUsers.has(id),
       );
@@ -962,7 +978,8 @@ export class EmployerAssessmentsService {
     const qb = this.poolProfileRepo
       .createQueryBuilder('pool')
       .innerJoin(User, 'u', 'u.id = pool.candidate_id')
-      .where('pool.tier = :tier', { tier: 'job_ready' });
+      .where('pool.tier = :tier', { tier: 'job_ready' })
+      .andWhere(FINISHED_JOB_EVALUATION_SQL);
 
     if (search) {
       qb.andWhere(
@@ -1888,11 +1905,22 @@ export class EmployerAssessmentsService {
         lastName: string | null;
       }>();
 
+    const unlocked = await this.billingService.getUnlockedIds(
+      employerUserId,
+      rows.map((row) => row.candidateUserId),
+    );
+
     return {
-      candidates: rows.map((row) => ({
-        candidateUserId: row.candidateUserId,
-        fullName: `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim(),
-      })),
+      candidates: rows.map((row) => {
+        const first = row.firstName ?? '';
+        const last = row.lastName ?? '';
+        return {
+          candidateUserId: row.candidateUserId,
+          fullName: unlocked.has(row.candidateUserId)
+            ? `${first} ${last}`.trim()
+            : `${first} ${last ? `${last.charAt(0).toUpperCase()}.` : ''}`.trim(),
+        };
+      }),
       total,
       page,
       limit,
