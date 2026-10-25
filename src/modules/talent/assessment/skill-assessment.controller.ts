@@ -74,6 +74,23 @@ export class SkillAssessmentController {
     return this.skillAssessmentService.start(userId);
   }
 
+  @Get('availability')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary: 'Whether a skill assessment can be started right now',
+    description:
+      'False while a fresh set of questions is still being prepared for the talent. ' +
+      'The UI uses it to show "available soon" instead of failing after Start.',
+  })
+  @ApiOkResponse({
+    description: 'can_start, and whether the talent is already waitlisted',
+  })
+  @ApiNotFoundResponse({ description: 'Talent profile not found' })
+  getAvailability(@CurrentUser('sub') userId: string) {
+    return this.skillAssessmentService.getAvailability(userId);
+  }
+
   @Get('session/:id')
   @HttpCode(HttpStatus.OK)
   @Header(

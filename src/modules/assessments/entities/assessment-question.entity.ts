@@ -13,6 +13,8 @@ import { User } from '../../users/entities/user.entity';
 export enum AssessmentType {
   SKILL = 'skill',
   ADVANCED = 'advanced',
+  /** Ungraded practice questions shown before the real assessment. */
+  PRACTICE = 'practice',
 }
 
 export enum QuestionType {

@@ -17,6 +17,7 @@ export const sourceQuestionSchema = z.object({
     'skill_assessment',
     'advanced_assessment',
     'extension_bank',
+    'practice',
   ]),
   format: z.enum(['mcq', 'long_text', 'open_ended_scenario']),
   competency: z.string().min(1),
@@ -30,6 +31,8 @@ export const sourceQuestionSchema = z.object({
   difficulty_score: z.number().optional(),
   tags: z.array(z.string()).optional(),
   anti_cheat_seed: z.string().optional(),
+  /** Shown after answering, for practice questions. */
+  explanation: z.string().optional(),
 });
 
 export type SourceQuestion = z.infer<typeof sourceQuestionSchema>;

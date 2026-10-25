@@ -548,7 +548,7 @@ describe('DashboardService', () => {
     });
   });
 
-  it('keeps skill available and unlocks advanced after one completed skill attempt', async () => {
+  it('marks skill completed and unlocks advanced after one passed skill attempt', async () => {
     const talentUser = makeUser({
       first_name: 'Jane',
       role: UserRole.TALENT,
@@ -605,7 +605,7 @@ describe('DashboardService', () => {
         {
           key: 'skill',
           title: 'Skill Assessment',
-          status: DashboardJourneyStatus.AVAILABLE,
+          status: DashboardJourneyStatus.COMPLETED,
         },
         {
           key: 'advanced',
@@ -733,7 +733,7 @@ describe('DashboardService', () => {
       (item) => item.key === 'advanced',
     );
 
-    expect(skillJourney?.status).toBe(DashboardJourneyStatus.AVAILABLE);
+    expect(skillJourney?.status).toBe(DashboardJourneyStatus.COMPLETED);
     expect(advancedJourney?.status).toBe(DashboardJourneyStatus.AVAILABLE);
     expect(home.performance.skill).toMatchObject({
       percentage: 57,

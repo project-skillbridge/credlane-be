@@ -41,7 +41,10 @@ import { ErrorMessages, SuccessMessages } from '../../../shared';
 import {
   SKILL_ASSESSMENT_MAX_ATTEMPTS,
   SKILL_ASSESSMENT_PASS_PERCENTAGE,
+  INTEGRITY_VIOLATION_LIMIT,
+  SKILL_ASSESSMENT_DURATION_MINUTES,
   SKILL_ASSESSMENT_SESSION_TIMEOUT_MS,
+  SKILL_ASSESSMENT_SUBMIT_GRACE_SECONDS,
 } from '../talent.constants';
 import { meetsSkillQualityBenchmark } from './assessment-quality';
 import {
@@ -52,6 +55,10 @@ import { GuidanceReportService } from '../../ai/guidance-report.service';
 import { GuidanceReport } from '../../ai/ai.types';
 import { BankExhaustedAlertService } from '../../mail/bank-exhausted-alert.service';
 import { AiResourcesService } from '../../ai-resources/ai-resources.service';
+import { CertificatesService } from '../certificates/certificates.service';
+import { NotificationDispatchService } from '../../notifications/notification-dispatch.service';
+import { AssessmentWaitlistService } from './assessment-waitlist.service';
+import { shuffleOptions } from './assessment-utils';
 import { SkillGuidanceReportQueueService } from './skill-guidance-report-queue.service';
 
 const SKILL_ASSESSMENT_MCQ_COUNT = 16;
@@ -59,6 +66,14 @@ const SKILL_PROBE_MCQ_COUNT = 2;
 const SKILL_ASSESSMENT_TOTAL = 20;
 
 type ProbeDirection = 'above' | 'below';
+
+/** The bank has no unserved questions left to build a full session. */
+class SkillBankExhaustedError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = 'SkillBankExhaustedError';
+  }
+}
 
 export interface SkillAssessmentQuestion {
   question_id: string;
@@ -91,6 +106,8 @@ export interface StartSkillAssessmentResult {
   session_id: string;
   attempt_number: number;
   verified_level: VerifiedLevel;
+  expires_at: string | null;
+  remaining_seconds: number | null;
   questions: SkillAssessmentQuestion[];
 }
 
@@ -102,6 +119,8 @@ export interface SkillAssessmentSessionResult {
   attempt_number: number;
   started_at: string;
   verified_level: VerifiedLevel;
+  expires_at: string | null;
+  remaining_seconds: number | null;
   questions: SkillAssessmentQuestion[];
 }
 
@@ -123,6 +142,15 @@ export interface SubmitSkillAssessmentResult {
   attempts_used: number;
   guidance_report?: GuidanceReport;
   personalised_message?: string;
+  /** Correct answers per competency, weakest first. */
+  competency_breakdown: SkillCompetencyResult[];
+}
+
+export interface SkillCompetencyResult {
+  competency: string;
+  correct: number;
+  total: number;
+  percentage: number;
 }
 
 const LEVEL_ORDER: Record<VerifiedLevel, number> = {
@@ -163,6 +191,9 @@ export class SkillAssessmentService {
     private readonly bankExhaustedAlert: BankExhaustedAlertService,
     private readonly aiResourcesService: AiResourcesService,
     private readonly guidanceReportQueue: SkillGuidanceReportQueueService,
+    private readonly assessmentWaitlist: AssessmentWaitlistService,
+    private readonly certificates: CertificatesService,
+    private readonly notificationDispatch: NotificationDispatchService,
   ) {}
 
   private async resolveSkillAttemptNumber(
@@ -248,7 +279,10 @@ export class SkillAssessmentService {
         const elapsed =
           Date.now() - new Date(activeAttempt.started_at).getTime();
 
-        if (elapsed >= SKILL_ASSESSMENT_SESSION_TIMEOUT_MS) {
+        if (
+          elapsed >= SKILL_ASSESSMENT_SESSION_TIMEOUT_MS ||
+          this.isPastSubmitDeadline(activeAttempt)
+        ) {
           // Session is stale — mark it as abandoned so it counts toward max attempts
           await attemptRepository.update(activeAttempt.id, {
             completed_at: new Date(),
@@ -292,6 +326,161 @@ export class SkillAssessmentService {
     };
   }
 
+  /**
+   * Picks a full session from questions this talent has not been served yet.
+   * Throws SkillBankExhaustedError when the bank cannot fill one. Read-only, so
+   * it also backs the availability check and the waitlist notifier.
+   */
+  private async planFreshSession(
+    manager: EntityManager,
+    profile: TalentProfile,
+    verifiedLevel: VerifiedLevel,
+  ): Promise<{
+    selectedQuestions: AssessmentQuestion[];
+    aboveProbeQuestions: AssessmentQuestion[];
+    belowProbeQuestions: AssessmentQuestion[];
+  }> {
+    const bankQuestions = await this.findEligibleSkillQuestions(
+      manager,
+      profile,
+      verifiedLevel,
+    );
+    let selectedQuestions: AssessmentQuestion[];
+    try {
+      selectedQuestions = this.selectSkillQuestionMix(bankQuestions);
+    } catch (err) {
+      throw new SkillBankExhaustedError(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    let aboveProbeQuestions: AssessmentQuestion[] = [];
+    const aboveLevel = this.levelAbove(verifiedLevel);
+    if (aboveLevel) {
+      const aboveBank = await this.findEligibleSkillQuestions(
+        manager,
+        profile,
+        aboveLevel,
+      );
+      aboveProbeQuestions = this.selectSkillProbeMix(aboveBank);
+    }
+
+    let belowProbeQuestions: AssessmentQuestion[] = [];
+    const belowLevel = this.levelBelowForProbe(verifiedLevel);
+    if (belowLevel) {
+      const belowBank = await this.findEligibleSkillQuestions(
+        manager,
+        profile,
+        belowLevel,
+      );
+      belowProbeQuestions = this.selectSkillProbeMix(belowBank);
+    }
+
+    const probeTotal = aboveProbeQuestions.length + belowProbeQuestions.length;
+    const deficit =
+      SKILL_ASSESSMENT_TOTAL - selectedQuestions.length - probeTotal;
+
+    if (deficit > 0) {
+      const usedIds = new Set(
+        [
+          ...selectedQuestions,
+          ...aboveProbeQuestions,
+          ...belowProbeQuestions,
+        ].map((q) => q.id),
+      );
+      const extras = bankQuestions
+        .filter((q) => !usedIds.has(q.id) && this.isPickQuestion(q))
+        .slice(0, deficit);
+      if (extras.length < deficit) {
+        throw new SkillBankExhaustedError(
+          `Could not fill ${deficit} deficit question(s) after probe selection`,
+        );
+      }
+      selectedQuestions = [...selectedQuestions, ...extras];
+    }
+
+    return { selectedQuestions, aboveProbeQuestions, belowProbeQuestions };
+  }
+
+  /**
+   * Whether a fresh session could be built for this talent right now. Used by
+   * the retake gate and the waitlist notifier; never alerts or writes.
+   */
+  async hasFreshCapacity(profile: TalentProfile): Promise<boolean> {
+    if (!profile.claimed_level || !profile.track) {
+      return true; // other gates explain what is missing; not a capacity issue
+    }
+    try {
+      await this.planFreshSession(
+        this.talentProfileRepo.manager,
+        profile,
+        profile.claimed_level,
+      );
+      return true;
+    } catch (err) {
+      if (err instanceof SkillBankExhaustedError) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  /** Lets the UI show "available soon" before the user clicks Start. */
+  async getAvailability(
+    userId: string,
+  ): Promise<{ can_start: boolean; waitlisted: boolean }> {
+    const profile = await this.talentProfileRepo.findOne({
+      where: { user_id: userId },
+    });
+    if (!profile) {
+      throw new NotFoundException(
+        ErrorMessages.SKILL_ASSESSMENT.PROFILE_NOT_FOUND,
+      );
+    }
+    const activeAttempt = await this.attemptRepo.findOne({
+      where: {
+        talent_profile_id: profile.id,
+        assessment_type: AssessmentType.SKILL,
+        completed_at: IsNull(),
+        force_submitted: false,
+      },
+    });
+    const canStart =
+      Boolean(activeAttempt) || (await this.hasFreshCapacity(profile));
+    return {
+      can_start: canStart,
+      waitlisted:
+        !canStart &&
+        (await this.assessmentWaitlist.isWaitlisted(profile.id, 'skill')),
+    };
+  }
+
+  /**
+   * Called outside the transaction (which has rolled back): alerts the team,
+   * waitlists the talent, and answers with a neutral message that never
+   * mentions the bank.
+   */
+  private async handleBankExhausted(
+    profile: TalentProfile,
+    verifiedLevel: VerifiedLevel,
+    err: SkillBankExhaustedError,
+  ): Promise<never> {
+    this.bankExhaustedAlert.notify({
+      assessmentType: 'skill',
+      detail: err.message,
+      talentProfileId: profile.id,
+      userId: profile.user_id,
+      track: profile.track,
+      verifiedLevel,
+    });
+    await this.assessmentWaitlist.join(profile, 'skill', verifiedLevel);
+    throw new ServiceUnavailableException({
+      error: 'ASSESSMENT_PREPARING',
+      message: ErrorMessages.SKILL_ASSESSMENT.NO_QUESTIONS_AVAILABLE,
+      waitlisted: true,
+    });
+  }
+
   async start(userId: string): Promise<StartSkillAssessmentResult> {
     const profile = await this.talentProfileRepo.findOne({
       where: { user_id: userId },
@@ -320,181 +509,132 @@ export class SkillAssessmentService {
     }
     const verifiedLevel = profile.claimed_level;
     const { savedAttempt, orderedQuestions, attemptNumber } =
-      await this.talentProfileRepo.manager.transaction(async (manager) => {
-        const lockedProfile = await manager.findOne(TalentProfile, {
-          where: { id: profile.id },
-          lock: { mode: 'pessimistic_write' },
-        });
+      await this.talentProfileRepo.manager
+        .transaction(async (manager) => {
+          const lockedProfile = await manager.findOne(TalentProfile, {
+            where: { id: profile.id },
+            lock: { mode: 'pessimistic_write' },
+          });
 
-        if (!lockedProfile) {
-          throw new NotFoundException(
-            ErrorMessages.SKILL_ASSESSMENT.PROFILE_NOT_FOUND,
+          if (!lockedProfile) {
+            throw new NotFoundException(
+              ErrorMessages.SKILL_ASSESSMENT.PROFILE_NOT_FOUND,
+            );
+          }
+
+          await this.assertSkillAssessmentAttemptsRemaining(
+            lockedProfile,
+            manager,
           );
-        }
 
-        await this.assertSkillAssessmentAttemptsRemaining(
-          lockedProfile,
-          manager,
-        );
-
-        let rawBankQuestions = await this.findEligibleSkillQuestions(
-          manager,
-          lockedProfile,
-          verifiedLevel,
-        );
-        let bankQuestions = rawBankQuestions;
-        let selectedQuestions: AssessmentQuestion[];
-        try {
-          selectedQuestions = this.selectSkillQuestionMix(bankQuestions);
-        } catch (firstErr) {
-          // Bank mix insufficient after question-history exclusion — retry without exclusion.
-          // Alert is suppressed here; it fires only if the retry also fails.
-          this.logger.warn(
-            `Skill bank mix insufficient after exclusion for user=${lockedProfile.user_id}, retrying without exclusion`,
-          );
-          rawBankQuestions = await this.findEligibleSkillQuestions(
+          // Questions a talent has already been served are never offered again,
+          // so a retake cannot repeat items. A bank too shallow for a fresh set
+          // raises SkillBankExhaustedError, handled outside the transaction.
+          const {
+            selectedQuestions,
+            aboveProbeQuestions,
+            belowProbeQuestions,
+          } = await this.planFreshSession(
             manager,
             lockedProfile,
             verifiedLevel,
-            true,
           );
-          bankQuestions = rawBankQuestions;
-          try {
-            selectedQuestions = this.selectSkillQuestionMix(bankQuestions);
-          } catch (retryErr) {
-            this.throwSkillBankExhausted(
-              retryErr instanceof Error ? retryErr.message : String(firstErr),
-              {
-                talentProfileId: lockedProfile.id,
-                userId: lockedProfile.user_id,
-                track: lockedProfile.track,
-                verifiedLevel: verifiedLevel,
-              },
-            );
-          }
-        }
 
-        let aboveProbeQuestions: AssessmentQuestion[] = [];
-        const aboveLevel = this.levelAbove(verifiedLevel);
-        if (aboveLevel) {
-          const aboveBank = await this.findEligibleSkillQuestions(
-            manager,
-            lockedProfile,
-            aboveLevel,
-          );
-          aboveProbeQuestions = this.selectSkillProbeMix(aboveBank);
-        }
-
-        let belowProbeQuestions: AssessmentQuestion[] = [];
-        const belowLevel = this.levelBelowForProbe(verifiedLevel);
-        if (belowLevel) {
-          const belowBank = await this.findEligibleSkillQuestions(
-            manager,
-            lockedProfile,
-            belowLevel,
-          );
-          belowProbeQuestions = this.selectSkillProbeMix(belowBank);
-        }
-
-        const probeTotal =
-          aboveProbeQuestions.length + belowProbeQuestions.length;
-        const deficit =
-          SKILL_ASSESSMENT_TOTAL - selectedQuestions.length - probeTotal;
-
-        if (deficit > 0) {
-          const usedIds = new Set(
-            [
-              ...selectedQuestions,
-              ...aboveProbeQuestions,
-              ...belowProbeQuestions,
-            ].map((q) => q.id),
-          );
-          const extras = bankQuestions
-            .filter((q) => !usedIds.has(q.id) && this.isPickQuestion(q))
-            .slice(0, deficit);
-          if (extras.length < deficit) {
-            this.throwSkillBankExhausted(
-              `Could not fill ${deficit} deficit question(s) after probe selection`,
-              {
-                talentProfileId: lockedProfile.id,
-                userId: lockedProfile.user_id,
-                track: lockedProfile.track,
-                verifiedLevel: verifiedLevel,
-              },
-            );
-          }
-          selectedQuestions = [...selectedQuestions, ...extras];
-        }
-
-        const allSelected = [
-          ...selectedQuestions,
-          ...aboveProbeQuestions,
-          ...belowProbeQuestions,
-        ];
-        const primaryCount = selectedQuestions.length;
-        const aboveCount = aboveProbeQuestions.length;
-        const orderedQuestions = allSelected.map((question, index) => {
-          let is_probe = false;
-          let probe_direction: ProbeDirection | undefined;
-          if (index >= primaryCount) {
-            is_probe = true;
-            probe_direction =
-              index < primaryCount + aboveCount ? 'above' : 'below';
-          }
-          return {
-            question_id: question.id,
-            question_number: index + 1,
-            block: this.blockForQuestionType(question.question_type),
-            question_type: question.question_type,
-            question_text: question.question_text,
-            options: question.options,
-            correct_answer: question.correct_answer,
-            is_probe,
-            probe_direction,
-          };
-        });
-        const completedAttempts = await this.countCompletedSkillAttempts(
-          lockedProfile.id,
-          manager,
-        );
-        const attemptNumber = completedAttempts + 1;
-        const startedAt = new Date();
-        const attempt = await manager.save(
-          AssessmentAttempt,
-          manager.create(AssessmentAttempt, {
-            talent_profile_id: lockedProfile.id,
-            assessment_type: AssessmentType.SKILL,
-            started_at: startedAt,
-            completed_at: null,
-            expires_at: null,
-            generated_questions_json: {
-              context: {
-                verified_level: verifiedLevel,
-                attempt_number: attemptNumber,
-              },
-              questions: orderedQuestions,
-            },
-          }),
-        );
-
-        await manager.save(
-          TalentQuestionHistory,
-          allSelected.map((question) =>
-            manager.create(TalentQuestionHistory, {
-              talent_profile_id: lockedProfile.id,
+          const allSelected = [
+            ...selectedQuestions,
+            ...aboveProbeQuestions,
+            ...belowProbeQuestions,
+          ];
+          const primaryCount = selectedQuestions.length;
+          const aboveCount = aboveProbeQuestions.length;
+          const orderedQuestions = allSelected.map((question, index) => {
+            let is_probe = false;
+            let probe_direction: ProbeDirection | undefined;
+            if (index >= primaryCount) {
+              is_probe = true;
+              probe_direction =
+                index < primaryCount + aboveCount ? 'above' : 'below';
+            }
+            return {
               question_id: question.id,
-              attempt_id: attempt.id,
-              user_answer: { served: true },
-              is_correct: null,
-              raw_score: null,
-              max_score: null,
-              answered_at: startedAt,
+              question_number: index + 1,
+              block: this.blockForQuestionType(question.question_type),
+              question_type: question.question_type,
+              question_text: question.question_text,
+              options: shuffleOptions(question.options),
+              correct_answer: question.correct_answer,
+              is_probe,
+              probe_direction,
+            };
+          });
+          const completedAttempts = await this.countCompletedSkillAttempts(
+            lockedProfile.id,
+            manager,
+          );
+          const attemptNumber = completedAttempts + 1;
+          const startedAt = new Date();
+          const expiresAt = new Date(
+            startedAt.getTime() + SKILL_ASSESSMENT_DURATION_MINUTES * 60 * 1000,
+          );
+          const attempt = await manager.save(
+            AssessmentAttempt,
+            manager.create(AssessmentAttempt, {
+              talent_profile_id: lockedProfile.id,
+              assessment_type: AssessmentType.SKILL,
+              started_at: startedAt,
+              completed_at: null,
+              expires_at: expiresAt,
+              generated_questions_json: {
+                context: {
+                  verified_level: verifiedLevel,
+                  attempt_number: attemptNumber,
+                },
+                questions: orderedQuestions,
+              },
             }),
-          ),
-        );
+          );
 
-        return { savedAttempt: attempt, orderedQuestions, attemptNumber };
-      });
+          // Questions can be re-served on a retake when the bank is small, so
+          // re-link the existing history row instead of violating the unique key.
+          await manager
+            .createQueryBuilder()
+            .insert()
+            .into(TalentQuestionHistory)
+            .values(
+              allSelected.map((question) =>
+                manager.create(TalentQuestionHistory, {
+                  talent_profile_id: lockedProfile.id,
+                  question_id: question.id,
+                  attempt_id: attempt.id,
+                  user_answer: { served: true },
+                  is_correct: null,
+                  raw_score: null,
+                  max_score: null,
+                  answered_at: startedAt,
+                }),
+              ),
+            )
+            .orUpdate(
+              [
+                'attempt_id',
+                'user_answer',
+                'is_correct',
+                'raw_score',
+                'max_score',
+                'answered_at',
+              ],
+              ['talent_profile_id', 'question_id'],
+            )
+            .execute();
+
+          return { savedAttempt: attempt, orderedQuestions, attemptNumber };
+        })
+        .catch((err: unknown) => {
+          if (err instanceof SkillBankExhaustedError) {
+            return this.handleBankExhausted(profile, verifiedLevel, err);
+          }
+          throw err;
+        });
 
     this.logger.log(
       `Skill assessment started: attempt=${savedAttempt.id} attempt_number=${attemptNumber} user=${userId} track=${profile.track} level=${verifiedLevel}`,
@@ -506,8 +646,34 @@ export class SkillAssessmentService {
       session_id: savedAttempt.id,
       attempt_number: attemptNumber,
       verified_level: verifiedLevel,
+      ...this.timerFields(savedAttempt),
       questions: this.toPublicSessionQuestions(orderedQuestions),
     };
+  }
+
+  /** Sessions started before the limit existed have no expires_at and stay untimed. */
+  private timerFields(attempt: AssessmentAttempt): {
+    expires_at: string | null;
+    remaining_seconds: number | null;
+  } {
+    if (!attempt.expires_at)
+      return { expires_at: null, remaining_seconds: null };
+    return {
+      expires_at: attempt.expires_at.toISOString(),
+      remaining_seconds: Math.max(
+        0,
+        Math.floor((attempt.expires_at.getTime() - Date.now()) / 1000),
+      ),
+    };
+  }
+
+  private isPastSubmitDeadline(attempt: AssessmentAttempt): boolean {
+    if (!attempt.expires_at) return false;
+    return (
+      Date.now() >
+      attempt.expires_at.getTime() +
+        SKILL_ASSESSMENT_SUBMIT_GRACE_SECONDS * 1000
+    );
   }
 
   async getSession(
@@ -561,6 +727,7 @@ export class SkillAssessmentService {
         payload.context?.verified_level ??
         profile.claimed_level ??
         VerifiedLevel.JUNIOR,
+      ...this.timerFields(attempt),
       questions: this.toPublicSessionQuestions(questions),
     };
   }
@@ -596,6 +763,18 @@ export class SkillAssessmentService {
       );
     }
 
+    if (this.isPastSubmitDeadline(attempt)) {
+      // Too late to score: the attempt is spent, same as an abandoned session.
+      await this.attemptRepo.update(attempt.id, {
+        completed_at: new Date(),
+        force_submitted: true,
+      });
+      throw new BadRequestException({
+        error: 'SKILL_TIME_EXPIRED',
+        message: ErrorMessages.SKILL_ASSESSMENT.TIME_EXPIRED,
+      });
+    }
+
     const sessionQuestions = this.readSessionQuestions(attempt);
     if (sessionQuestions.length === 0) {
       throw new BadRequestException(
@@ -621,6 +800,10 @@ export class SkillAssessmentService {
     let belowProbeMcqTotal = 0;
     const responsesToSave: Partial<AssessmentResponse>[] = [];
     const historyPatches = new Map<string, Partial<TalentQuestionHistory>>();
+    const competencyTally = new Map<
+      string,
+      { correct: number; total: number }
+    >();
 
     for (const question of sessionQuestions) {
       const submitted = answerMap.get(question.question_id);
@@ -649,6 +832,16 @@ export class SkillAssessmentService {
         } else {
           primaryMcqCorrect++;
         }
+      }
+
+      if (entity?.competency) {
+        const tally = competencyTally.get(entity.competency) ?? {
+          correct: 0,
+          total: 0,
+        };
+        tally.total++;
+        if (isCorrect) tally.correct++;
+        competencyTally.set(entity.competency, tally);
       }
 
       responsesToSave.push({
@@ -724,18 +917,31 @@ export class SkillAssessmentService {
     const passed = !failed && validatedLevel !== null;
     const tier = this.resolveSkillTier(percentage);
 
-    if (!passed) {
-      void this.guidanceReportQueue.enqueue({
-        attemptId: attempt.id,
-        track: profile.track ?? 'general',
-        claimed_level: claimed,
-        validated_level:
-          validatedLevel ?? profile.validated_level ?? VerifiedLevel.JUNIOR,
-        percentage,
-      });
-    }
-
     await this.talentProfileRepo.manager.transaction(async (manager) => {
+      // Lock the attempt and re-check it here: the reads above happen outside
+      // the transaction, so a double submit or a violation that voids the
+      // session in the meantime would otherwise be scored anyway.
+      const lockedAttempt = await manager.findOne(AssessmentAttempt, {
+        where: {
+          id: attempt.id,
+          talent_profile_id: profile.id,
+          assessment_type: AssessmentType.SKILL,
+        },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!lockedAttempt) {
+        throw new NotFoundException(
+          ErrorMessages.SKILL_ASSESSMENT.ATTEMPT_NOT_FOUND,
+        );
+      }
+      if (lockedAttempt.completed_at || lockedAttempt.force_submitted) {
+        throw new BadRequestException(
+          lockedAttempt.force_submitted
+            ? ErrorMessages.SKILL_ASSESSMENT.SESSION_VOIDED
+            : ErrorMessages.SKILL_ASSESSMENT.ATTEMPT_ALREADY_SUBMITTED,
+        );
+      }
+
       await manager.save(AssessmentResponse, responsesToSave);
       if (historyPatches.size > 0) {
         const historyValues = Array.from(
@@ -770,8 +976,13 @@ export class SkillAssessmentService {
           .execute();
       }
 
-      attempt.completed_at = new Date();
-      await manager.save(AssessmentAttempt, attempt);
+      // A targeted update, not a full save, so nothing else on the row (such
+      // as force_submitted) is overwritten with a stale copy.
+      await manager.update(
+        AssessmentAttempt,
+        { id: attempt.id },
+        { completed_at: new Date() },
+      );
 
       const result = manager.create(AssessmentResult, {
         attempt_id: attempt.id,
@@ -806,9 +1017,36 @@ export class SkillAssessmentService {
       }
     });
 
+    // Only after the result is committed, so a failed submit never leaves a
+    // report job behind for a result that doesn't exist.
+    if (!passed) {
+      void this.guidanceReportQueue.enqueue({
+        attemptId: attempt.id,
+        track: profile.track ?? 'general',
+        claimed_level: claimed,
+        validated_level:
+          validatedLevel ?? profile.validated_level ?? VerifiedLevel.JUNIOR,
+        percentage,
+      });
+    }
+
     this.logger.log(
       `Skill assessment submitted: attempt=${attempt.id} user=${userId} score=${totalScore}/${totalMaxScore} pct=${percentage} validated=${validatedLevel ?? 'n/a'} failed=${failed} passed=${passed} downgraded=${downgraded}`,
     );
+
+    // Issue (or renew) the shareable certificate. Never blocks the result.
+    let certificateCode: string | undefined;
+    if (passed && validatedLevel && profile.track) {
+      certificateCode = await this.certificates
+        .issueForSkillPass(profile.id, profile.track, validatedLevel)
+        .then((cert) => cert?.code)
+        .catch((err) => {
+          this.logger.error(
+            `Certificate issue failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+          );
+          return undefined;
+        });
+    }
 
     // Warm resource cache for the validated level on pass
     if (!failed && validatedLevel && profile.track) {
@@ -833,6 +1071,28 @@ export class SkillAssessmentService {
       attemptsUsed < SKILL_ASSESSMENT_MAX_ATTEMPTS;
     const retakeAvailable = !passed && hasAttemptsRemaining;
 
+    // Tell the talent about the outcome in-app. Never blocks the result.
+    if (profile.track) {
+      const payload = {
+        level: validatedLevel ?? claimed,
+        track: profile.track,
+        percentage,
+        certificateCode,
+        retakeAvailable,
+      };
+      const notify = passed
+        ? this.notificationDispatch.notifySkillAssessmentPassed(userId, payload)
+        : this.notificationDispatch.notifySkillAssessmentFailed(
+            userId,
+            payload,
+          );
+      void notify.catch((err) => {
+        this.logger.error(
+          `Skill result notification failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        );
+      });
+    }
+
     return {
       status: failed ? 'failed' : 'success',
       message: failed
@@ -851,10 +1111,29 @@ export class SkillAssessmentService {
       retake_available: retakeAvailable,
       max_attempts: SKILL_ASSESSMENT_MAX_ATTEMPTS,
       attempts_used: attemptsUsed,
+      competency_breakdown: this.toCompetencyBreakdown(competencyTally),
       ...(downgraded && {
         personalised_message: SuccessMessages.SKILL_ASSESSMENT.DOWNGRADE_NOTICE,
       }),
     };
+  }
+
+  /** Weakest competency first, so the page can lead with what to work on. */
+  private toCompetencyBreakdown(
+    tally: Map<string, { correct: number; total: number }>,
+  ): SkillCompetencyResult[] {
+    return [...tally.entries()]
+      .map(([competency, { correct, total }]) => ({
+        competency,
+        correct,
+        total,
+        percentage: Math.round((correct / total) * 100),
+      }))
+      .sort(
+        (a, b) =>
+          a.percentage - b.percentage ||
+          a.competency.localeCompare(b.competency),
+      );
   }
 
   private async findEligibleSkillQuestions(
@@ -1010,33 +1289,6 @@ export class SkillAssessmentService {
     return mcqs;
   }
 
-  private throwSkillBankExhausted(
-    detail: string,
-    context?: {
-      talentProfileId?: string;
-      userId?: string;
-      track?: string | null;
-      verifiedLevel?: string | null;
-      expectedQuestions?: number;
-      gotQuestions?: number;
-    },
-  ): never {
-    this.bankExhaustedAlert.notify({
-      assessmentType: 'skill',
-      detail,
-      talentProfileId: context?.talentProfileId,
-      userId: context?.userId,
-      track: context?.track,
-      verifiedLevel: context?.verifiedLevel,
-      expectedQuestions: context?.expectedQuestions,
-      gotQuestions: context?.gotQuestions,
-    });
-    throw new ServiceUnavailableException({
-      error: 'BANK_EXHAUSTED',
-      message: ErrorMessages.SKILL_ASSESSMENT.NO_QUESTIONS_AVAILABLE,
-    });
-  }
-
   private toPercentage(score: number, maxScore: number): number {
     return maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
   }
@@ -1183,19 +1435,36 @@ export class SkillAssessmentService {
           );
         }
 
-        await manager.update(
-          AssessmentAttempt,
-          { id: attempt.id },
-          { force_submitted: true, completed_at: new Date() },
-        );
+        const voided =
+          updatedAttempt.tab_switch_count >= INTEGRITY_VIOLATION_LIMIT ||
+          updatedAttempt.copy_paste_count >= INTEGRITY_VIOLATION_LIMIT;
+        if (voided) {
+          await manager.update(
+            AssessmentAttempt,
+            { id: attempt.id },
+            { force_submitted: true, completed_at: new Date() },
+          );
+        }
 
         return {
+          voided,
           attemptId: attempt.id,
           tabSwitchCount: updatedAttempt.tab_switch_count,
           copyPasteCount: updatedAttempt.copy_paste_count,
         };
       },
     );
+
+    if (!result.voided) {
+      return {
+        status: 'recorded',
+        message: `Violation recorded (${Math.max(result.tabSwitchCount, result.copyPasteCount)} of ${INTEGRITY_VIOLATION_LIMIT}). The session ends at ${INTEGRITY_VIOLATION_LIMIT}.`,
+        tabSwitchCount: result.tabSwitchCount,
+        copyPasteCount: result.copyPasteCount,
+        sessionVoided: false,
+        action: 'warn',
+      };
+    }
 
     this.logger.warn(
       `Skill session voided - integrity ${dto.eventType}: attempt=${result.attemptId} user=${userId}`,

@@ -84,6 +84,9 @@ function mapAssessmentType(stage: SourceQuestion['assessment_stage']): {
   if (stage === 'advanced_assessment') {
     return { assessmentType: AssessmentType.ADVANCED, isLive: true };
   }
+  if (stage === 'practice') {
+    return { assessmentType: AssessmentType.PRACTICE, isLive: true };
+  }
   return { assessmentType: AssessmentType.ADVANCED, isLive: false };
 }
 
@@ -163,6 +166,7 @@ export function mapSourceQuestion(
       industry: source.industry ?? null,
       anti_cheat_seed: source.anti_cheat_seed ?? null,
       assessment_stage: source.assessment_stage,
+      ...(source.explanation ? { explanation: source.explanation } : {}),
       ...(answerBlock ? { answer_block: answerBlock } : {}),
       ...(source.grading_rubric
         ? { grading_rubric: source.grading_rubric }

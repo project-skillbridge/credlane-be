@@ -3,6 +3,7 @@ import {
   parseQuestionBankText,
 } from './extract-json-objects';
 import { mapSourceQuestion } from './map-source-question';
+import { sourceQuestionSchema } from './import.types';
 import {
   AssessmentType,
   QuestionType,
@@ -79,6 +80,36 @@ describe('question import', () => {
     expect(mapped.slot_type).toBeNull();
     expect(mapped.correct_answer).toBe('Yes');
     expect(mapped.question_type).toBe(QuestionType.SINGLE_PICK);
+  });
+
+  it('maps a practice question to its own type with the explanation', () => {
+    const source = sourceQuestionSchema.parse({
+      id: 'FED-PR-JUN-001',
+      role_code: 'FED',
+      level: 'junior',
+      assessment_stage: 'practice',
+      format: 'mcq',
+      competency: 'async-javascript',
+      question: 'Which approach runs two independent requests together?',
+      options: {
+        A: 'Await each in turn',
+        B: 'Promise.all',
+        C: 'Nest them',
+        D: 'Poll',
+      },
+      correct_answer: 'B',
+      explanation:
+        'Independent requests can start together and be awaited as one.',
+    });
+
+    const mapped = mapSourceQuestion(source, 1);
+
+    expect(mapped.assessment_type).toBe(AssessmentType.PRACTICE);
+    expect(mapped.is_live).toBe(true);
+    expect(mapped.correct_answer).toBe('Promise.all');
+    expect(mapped.metadata?.explanation).toBe(
+      'Independent requests can start together and be awaited as one.',
+    );
   });
 
   it('maps advanced open text with slot type and rubric metadata', () => {
