@@ -149,3 +149,37 @@ export interface AiResourcesPayload {
   resources: GeneratedArticleItem[];
   videos: GeneratedVideoItem[];
 }
+
+// ── Hiring brief (employer-facing) ───────────────────────────────────────────
+
+export interface HiringBriefCompetency {
+  assessment: 'skill' | 'job_ready';
+  name: string;
+  score: number; // 0–100, mean across that competency's questions
+  questions: number;
+}
+
+export interface HiringBriefOpenAnswer {
+  assessment: 'skill' | 'job_ready';
+  question: string;
+  answer: string;
+  rubric_total: number | null;
+  rubric_max: number | null;
+  feedback: string;
+}
+
+export interface HiringBriefInput {
+  track: string;
+  claimed_level: string;
+  validated_level: string;
+  skill: { percentage: number } | null;
+  job_ready: { percentage: number; tier: string | null } | null;
+  competencies: HiringBriefCompetency[];
+  missed_questions: {
+    assessment: 'skill' | 'job_ready';
+    competency: string | null;
+    question: string;
+  }[];
+  open_answers: HiringBriefOpenAnswer[];
+  integrity: string | null;
+}

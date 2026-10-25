@@ -68,9 +68,9 @@ describe('TalentExploreJobsService', () => {
   it('rejects interest clicks from talent that is not Job Ready', async () => {
     mockPoolProfileRepo.findOne.mockResolvedValue(null);
 
-    await expect(
-      service.markInterested('talent-1', 'role-1'),
-    ).rejects.toThrow('Complete your job-ready assessment to express interest.');
+    await expect(service.markInterested('talent-1', 'role-1')).rejects.toThrow(
+      'Complete your job-ready assessment to express interest.',
+    );
   });
 
   it('returns conflict when a public role has reached applicant cap', async () => {
@@ -94,9 +94,9 @@ describe('TalentExploreJobsService', () => {
       async (cb: (manager: unknown) => Promise<unknown>) => cb(manager),
     );
 
-    await expect(
-      service.markInterested('talent-1', 'role-1'),
-    ).rejects.toThrow(ConflictException);
+    await expect(service.markInterested('talent-1', 'role-1')).rejects.toThrow(
+      ConflictException,
+    );
     expect(manager.save).not.toHaveBeenCalled();
   });
 

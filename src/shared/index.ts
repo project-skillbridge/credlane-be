@@ -6,6 +6,7 @@ export {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
+  PaymentRequiredError,
   TooManyRequestsError,
   UnauthorizedError,
 } from './errors/app.errors';

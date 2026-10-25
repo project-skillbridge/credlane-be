@@ -10,6 +10,8 @@ import { User } from '../users/entities/user.entity';
 import { NotificationDispatchService } from '../notifications/notification-dispatch.service';
 import { EmployerVerificationService } from '../employer/employer-verification.service';
 import { EmployerRolesService } from '../employer-roles/employer-roles.service';
+import { EmployerBillingService } from '../employer-billing/employer-billing.service';
+import { HireFeedback } from './entities/hire-feedback.entity';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../shared';
 
 describe('OffersService', () => {
@@ -32,8 +34,10 @@ describe('OffersService', () => {
     count: jest.fn(),
   };
 
+  const mockFinishedEvaluationQuery = jest.fn();
   const mockPoolProfileRepo = {
     findOne: jest.fn(),
+    manager: { query: mockFinishedEvaluationQuery },
   };
 
   const mockUserRepo = {
@@ -58,6 +62,16 @@ describe('OffersService', () => {
     findActiveRoleForOffer: jest.fn(),
   };
 
+  const mockHireFeedbackRepo = {
+    find: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
+    save: jest.fn().mockResolvedValue({}),
+  };
+
+  const mockBillingService = {
+    getUnlockedIds: jest.fn().mockResolvedValue(new Set<string>()),
+  };
+
   const mockEmployerProfileRepo = {
     increment: jest.fn(),
     find: jest.fn(),
@@ -65,6 +79,8 @@ describe('OffersService', () => {
   };
 
   beforeEach(async () => {
+    mockFinishedEvaluationQuery.mockReset();
+    mockFinishedEvaluationQuery.mockResolvedValue([{ ok: 1 }]);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OffersService,
@@ -94,6 +110,11 @@ describe('OffersService', () => {
           provide: getRepositoryToken(EmployerProfile),
           useValue: mockEmployerProfileRepo,
         },
+        {
+          provide: getRepositoryToken(HireFeedback),
+          useValue: mockHireFeedbackRepo,
+        },
+        { provide: EmployerBillingService, useValue: mockBillingService },
       ],
     }).compile();
 
@@ -651,11 +672,13 @@ describe('OffersService', () => {
         {
           offer_id: 'offer-1',
           candidate_user_id: 'candidate-1',
-          candidate_name: 'Ada Lovelace',
+          candidate_name: 'Ada L.',
+          candidate_avatar_url: null,
           role_track: 'frontend_developer',
           job_title: 'Senior Frontend Engineer',
           date_sent: sentAt,
           status: OfferStatus.PENDING,
+          pending_hire_feedback: false,
         },
       ]);
       expect(result.total).toBe(1);
@@ -889,6 +912,12 @@ describe('OffersService', () => {
 
       const mockManager = {
         increment: jest.fn().mockResolvedValue({ affected: 1 }),
+        createQueryBuilder: jest.fn().mockReturnValue({
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 1 }),
+        }),
       };
       mockOfferRepo.manager.transaction.mockImplementation(
         async (cb: (manager: unknown) => Promise<unknown>) => {
@@ -906,6 +935,20 @@ describe('OffersService', () => {
         'hire_count',
         1,
       );
+    });
+
+    it('should not count a hire twice', async () => {
+      mockOfferRepo.findOne.mockResolvedValue({
+        id: 'offer-1',
+        employer_user_id: 'employer-1',
+        status: OfferStatus.ACCEPTED,
+        hired_at: new Date(),
+      });
+      mockOfferRepo.manager.transaction.mockClear();
+
+      await service.markHireComplete('employer-1', 'offer-1');
+
+      expect(mockOfferRepo.manager.transaction).not.toHaveBeenCalled();
     });
 
     it('should throw NotFoundError if offer does not exist', async () => {
@@ -927,6 +970,40 @@ describe('OffersService', () => {
       await expect(
         service.markHireComplete('employer-1', 'offer-1'),
       ).rejects.toThrow(BadRequestError);
+    });
+  });
+
+  describe('submitHireFeedback', () => {
+    const dto = { overallRating: 5, wouldHireAgain: true };
+
+    it('rejects a rating for a hire that was not confirmed', async () => {
+      mockOfferRepo.findOne.mockResolvedValue({
+        id: 'offer-1',
+        status: OfferStatus.ACCEPTED,
+        hired_at: null,
+      });
+      await expect(
+        service.submitHireFeedback('employer-1', 'offer-1', dto),
+      ).rejects.toThrow(BadRequestError);
+    });
+
+    it('saves one rating per hire', async () => {
+      mockOfferRepo.findOne.mockResolvedValue({
+        id: 'offer-1',
+        candidate_user_id: 'c1',
+        status: OfferStatus.ACCEPTED,
+        hired_at: new Date(),
+      });
+      mockHireFeedbackRepo.count.mockResolvedValueOnce(0);
+      await service.submitHireFeedback('employer-1', 'offer-1', dto);
+      expect(mockHireFeedbackRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ offer_id: 'offer-1', overall_rating: 5 }),
+      );
+
+      mockHireFeedbackRepo.count.mockResolvedValueOnce(1);
+      await expect(
+        service.submitHireFeedback('employer-1', 'offer-1', dto),
+      ).rejects.toThrow('already rated');
     });
   });
 

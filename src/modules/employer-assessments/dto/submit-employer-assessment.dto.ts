@@ -1,6 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsObject, IsOptional, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsObject,
+  IsOptional,
+  Min,
+  ValidateNested,
+} from 'class-validator';
+import { IntegrityEventsDto } from './integrity-events.dto';
 import { EmployerAssessmentDeliveryMode } from '../entities/employer-assessment-invite.entity';
 
 export class SubmitEmployerAssessmentDto {
@@ -24,4 +32,10 @@ export class SubmitEmployerAssessmentDto {
   @IsOptional()
   @IsObject()
   answers?: Record<string, unknown>;
+
+  @ApiProperty({ required: false, type: IntegrityEventsDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => IntegrityEventsDto)
+  integrity?: IntegrityEventsDto;
 }

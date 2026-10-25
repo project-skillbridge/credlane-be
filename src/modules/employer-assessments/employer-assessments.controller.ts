@@ -5,6 +5,7 @@ import {
   Headers,
   HttpCode,
   HttpStatus,
+  Ip,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -15,6 +16,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
 import type { Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -31,6 +33,9 @@ import {
   ApiGetPublicAssessment,
   ApiImportAssessmentQuestions,
   ApiListCredlaneCatalogue,
+  ApiDraftAssessmentQuestions,
+  ApiGetCredlaneCatalogueEntry,
+  ApiGetEmployerAssessmentResultDetail,
   ApiListEmployerAssessmentResults,
   ApiListEmployerAssessments,
   ApiSearchAssessmentCandidates,
@@ -47,6 +52,8 @@ import { ListEmployerAssessmentResultsQueryDto } from './dto/list-employer-asses
 import { SearchAssessmentCandidatesQueryDto } from './dto/search-assessment-candidates-query.dto';
 import { SubmitEmployerAssessmentDto } from './dto/submit-employer-assessment.dto';
 import { EMPLOYER_ASSESSMENT_IMPORT_MAX_FILE_BYTES } from './employer-assessments.constants';
+import { DraftAssessmentQuestionsDto } from './dto/draft-assessment-questions.dto';
+import { EmployerAssessmentDraftService } from './employer-assessment-draft.service';
 import { EmployerAssessmentsService } from './employer-assessments.service';
 
 @ApiEmployerAssessmentsTags()
@@ -54,7 +61,21 @@ import { EmployerAssessmentsService } from './employer-assessments.service';
 export class EmployerAssessmentsController {
   constructor(
     private readonly employerAssessmentsService: EmployerAssessmentsService,
+    private readonly draftService: EmployerAssessmentDraftService,
   ) {}
+
+  /** AI-drafted starting point only; the employer reviews before saving. */
+  @Post('employer/assessments/draft-questions')
+  @Roles(UserRole.EMPLOYER)
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 3_600_000 } })
+  @ApiDraftAssessmentQuestions()
+  draftQuestions(
+    @CurrentUser('sub') employerUserId: string,
+    @Body() dto: DraftAssessmentQuestionsDto,
+  ) {
+    return this.draftService.draftQuestions(employerUserId, dto);
+  }
 
   @Post('employer/assessments')
   @Roles(UserRole.EMPLOYER)
@@ -74,6 +95,12 @@ export class EmployerAssessmentsController {
   @ApiListEmployerAssessments()
   listAssessments(@CurrentUser('sub') employerUserId: string) {
     return this.employerAssessmentsService.listAssessments(employerUserId);
+  }
+
+  @Get('employer/assessments/overview')
+  @Roles(UserRole.EMPLOYER)
+  getOverview(@CurrentUser('sub') employerUserId: string) {
+    return this.employerAssessmentsService.getEmployerOverview(employerUserId);
   }
 
   @Get('employer/assessments/candidates')
@@ -96,11 +123,13 @@ export class EmployerAssessmentsController {
     @CurrentUser('sub') employerUserId: string,
     @Query('q') q?: string,
     @Query('limit') limit?: number,
+    @Query('track') track?: string,
   ) {
     return this.employerAssessmentsService.searchVerifiedTalent(
       employerUserId,
       q ?? '',
       Number(limit ?? 10),
+      track,
     );
   }
 
@@ -111,7 +140,7 @@ export class EmployerAssessmentsController {
     response.setHeader('Content-Type', 'text/csv');
     response.setHeader(
       'Content-Disposition',
-      'attachment; filename="credlane-question-template.csv"',
+      'attachment; filename="skillsift-question-template.csv"',
     );
     response.send(this.employerAssessmentsService.getTemplateCsv());
   }
@@ -126,7 +155,7 @@ export class EmployerAssessmentsController {
     );
     response.setHeader(
       'Content-Disposition',
-      'attachment; filename="credlane-question-template.xlsx"',
+      'attachment; filename="skillsift-question-template.xlsx"',
     );
     response.send(this.employerAssessmentsService.getTemplateXlsx());
   }
@@ -155,6 +184,20 @@ export class EmployerAssessmentsController {
       employerUserId,
       query.page,
       query.limit,
+      { roleTrack: query.roleTrack, experienceLevel: query.experienceLevel },
+    );
+  }
+
+  @Get('employer/assessments/credlane-catalogue/:catalogueId')
+  @Roles(UserRole.EMPLOYER)
+  @ApiGetCredlaneCatalogueEntry()
+  getCredlaneCatalogueEntry(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('catalogueId', ParseUUIDPipe) catalogueId: string,
+  ) {
+    return this.employerAssessmentsService.getCredlaneCatalogueEntry(
+      employerUserId,
+      catalogueId,
     );
   }
 
@@ -213,6 +256,19 @@ export class EmployerAssessmentsController {
     );
   }
 
+  @Post('employer/assessments/:assessmentId/access-code')
+  @Roles(UserRole.EMPLOYER)
+  @HttpCode(HttpStatus.OK)
+  regenerateAccessCode(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('assessmentId', ParseUUIDPipe) assessmentId: string,
+  ) {
+    return this.employerAssessmentsService.regenerateAccessCode(
+      employerUserId,
+      assessmentId,
+    );
+  }
+
   @Get('employer/assessments/:assessmentId/share-link')
   @Roles(UserRole.EMPLOYER)
   getAssessmentShareLink(
@@ -240,6 +296,21 @@ export class EmployerAssessmentsController {
     );
   }
 
+  @Get('employer/assessments/:assessmentId/results/:submissionId')
+  @Roles(UserRole.EMPLOYER)
+  @ApiGetEmployerAssessmentResultDetail()
+  getResultDetail(
+    @CurrentUser('sub') employerUserId: string,
+    @Param('assessmentId', ParseUUIDPipe) assessmentId: string,
+    @Param('submissionId', ParseUUIDPipe) submissionId: string,
+  ) {
+    return this.employerAssessmentsService.getResultDetail(
+      employerUserId,
+      assessmentId,
+      submissionId,
+    );
+  }
+
   @Get('assessments/link/:token')
   @Public()
   @ApiGetPublicAssessment()
@@ -255,11 +326,17 @@ export class EmployerAssessmentsController {
 
   @Post('assessments/external/:token/register')
   @Public()
+  @Throttle({ default: { limit: 20, ttl: 3_600_000 } })
   registerExternalAssessment(
     @Param('token') token: string,
     @Body() dto: RegisterExternalAssessmentDto,
+    @Ip() ip: string,
   ) {
-    return this.employerAssessmentsService.registerExternalApplicant(token, dto);
+    return this.employerAssessmentsService.registerExternalApplicant(
+      token,
+      dto,
+      ip,
+    );
   }
 
   @Post('assessments/external/:token/submit')
@@ -274,6 +351,19 @@ export class EmployerAssessmentsController {
       token,
       sessionToken,
       dto,
+    );
+  }
+
+  @Post('assessments/link/:token/start')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.TALENT)
+  startAssessment(
+    @CurrentUser('sub') candidateUserId: string,
+    @Param('token') token: string,
+  ) {
+    return this.employerAssessmentsService.startAssessment(
+      candidateUserId,
+      token,
     );
   }
 

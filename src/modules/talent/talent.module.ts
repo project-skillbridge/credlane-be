@@ -28,6 +28,7 @@ import { AdvancedAssessmentController } from './assessment/advanced-assessment.c
 import { AdvancedAssessmentService } from './assessment/advanced-assessment.service';
 import { AdvancedAssessmentQueueService } from './assessment/advanced-assessment-queue.service';
 import { AdvancedAssessmentSubmitProcessor } from './assessment/advanced-assessment-submit.processor';
+import { HiringBriefModule } from '../employer-discovery/hiring-brief.module';
 import { EmployerPoolProfileService } from './assessment/employer-pool-profile.service';
 import { PracticeAssessmentController } from './assessment/practice-assessment.controller';
 import { PracticeAssessmentService } from './assessment/practice-assessment.service';
@@ -50,6 +51,7 @@ import { TalentService } from './talent.service';
 
 @Module({
   imports: [
+    HiringBriefModule,
     TypeOrmModule.forFeature([
       TalentProfile,
       EmployerPoolProfile,

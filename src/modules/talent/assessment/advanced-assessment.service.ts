@@ -1,3 +1,5 @@
+import { RoleMatchAlertService } from '../../notifications/role-match-alert.service';
+import { HiringBriefService } from '../../employer-discovery/hiring-brief.service';
 import {
   BadRequestException,
   ConflictException,
@@ -181,6 +183,8 @@ export class AdvancedAssessmentService {
     private readonly rubricScoring: RubricScoringService,
     private readonly guidanceReport: GuidanceReportService,
     private readonly employerPoolProfileService: EmployerPoolProfileService,
+    private readonly hiringBriefService: HiringBriefService,
+    private readonly roleMatchAlert: RoleMatchAlertService,
     private readonly questionGeneration: QuestionGenerationService,
     private readonly usersService: UsersService,
     private readonly notificationDispatch: NotificationDispatchService,
@@ -898,6 +902,9 @@ export class AdvancedAssessmentService {
           integrityClean: integrityConfidence === 'high',
           personalContext,
         });
+        // Write the employer-facing brief now; not awaited so submit stays fast.
+        void this.hiringBriefService.warm(profile.id);
+        void this.roleMatchAlert.notifyForCandidate(profile.id, userId);
       } catch (error) {
         this.logger.error(
           `Employer pool profile generation failed for user=${userId}: ${String(error)}`,

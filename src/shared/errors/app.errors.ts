@@ -50,3 +50,9 @@ export class TooManyRequestsError extends HttpException {
     super(message, HttpStatus.TOO_MANY_REQUESTS);
   }
 }
+
+export class PaymentRequiredError extends HttpException {
+  constructor(message: string) {
+    super(message, HttpStatus.PAYMENT_REQUIRED);
+  }
+}

@@ -9,6 +9,7 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
   Matches,
@@ -79,6 +80,16 @@ export class CreateEmployerAssessmentDto {
   @IsIn([20, 30, 40, 60])
   timeLimitMinutes: number;
 
+  @ApiProperty({
+    required: false,
+    maxLength: 500,
+    description: 'Short note shown to takers before they start.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  welcomeMessage?: string;
+
   @ApiProperty({ minimum: 50, maximum: 90 })
   @Type(() => Number)
   @IsInt()
@@ -122,6 +133,24 @@ export class CreateEmployerAssessmentDto {
   @IsNotEmpty()
   @IsUUID('4')
   credlaneAssessmentId?: string;
+
+  @ApiProperty({
+    required: false,
+    minimum: 5,
+    maximum: 50,
+    description:
+      'Library assessments only: how many questions to use. A random selection of this size is taken from the library entry.',
+  })
+  @ValidateIf(
+    (dto: CreateEmployerAssessmentDto) =>
+      dto.questionSource === EmployerAssessmentQuestionSource.CREDLANE_BANK &&
+      dto.questionCount !== undefined,
+  )
+  @Type(() => Number)
+  @IsInt()
+  @Min(5)
+  @Max(50)
+  questionCount?: number;
 
   @ApiProperty()
   @IsBoolean()

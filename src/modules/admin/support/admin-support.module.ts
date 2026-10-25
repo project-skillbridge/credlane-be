@@ -7,7 +7,9 @@ import { SupportTicketMessage } from './entities/support-ticket-message.entity';
 import { SupportTicket } from './entities/support-ticket.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([SupportTicket, SupportTicketMessage, User])],
+  imports: [
+    TypeOrmModule.forFeature([SupportTicket, SupportTicketMessage, User]),
+  ],
   controllers: [AdminSupportController],
   providers: [AdminSupportService],
 })

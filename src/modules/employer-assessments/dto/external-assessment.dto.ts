@@ -5,12 +5,31 @@ import {
   IsBoolean,
   IsEmail,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
+  MinLength,
   ValidateNested,
 } from 'class-validator';
+import { IntegrityEventsDto } from './integrity-events.dto';
 
 export class RegisterExternalAssessmentDto {
+  @ApiProperty({ example: 'Ada Lovelace' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  fullName: string;
+
+  @ApiProperty({
+    example: 'K7M2QX',
+    description: 'The access code the employer gave you.',
+  })
+  @IsString()
+  @MinLength(4)
+  @MaxLength(12)
+  accessCode: string;
+
   @ApiProperty({ example: 'candidate@example.com' })
   @IsEmail()
   email: string;
@@ -54,4 +73,10 @@ export class SubmitExternalAssessmentDto {
   @ValidateNested({ each: true })
   @Type(() => ExternalAssessmentModuleResponseDto)
   responses: ExternalAssessmentModuleResponseDto[];
+
+  @ApiProperty({ required: false, type: IntegrityEventsDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => IntegrityEventsDto)
+  integrity?: IntegrityEventsDto;
 }

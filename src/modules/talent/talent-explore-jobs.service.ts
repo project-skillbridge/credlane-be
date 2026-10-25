@@ -113,7 +113,9 @@ export class TalentExploreJobsService {
         : [],
     ]);
 
-    const interestedRoleIds = new Set(interests.map((interest) => interest.role_id));
+    const interestedRoleIds = new Set(
+      interests.map((interest) => interest.role_id),
+    );
     const employerProfilesByUserId = new Map(
       employerProfiles.map((profile) => [profile.user_id, profile]),
     );
@@ -246,7 +248,12 @@ export class TalentExploreJobsService {
         talent_user_id: talentUserId,
         role_id: roleId,
       } as Partial<TalentRoleInterest>);
-      await manager.increment(EmployerRole, { id: roleId }, 'interested_count', 1);
+      await manager.increment(
+        EmployerRole,
+        { id: roleId },
+        'interested_count',
+        1,
+      );
 
       return {
         role_id: roleId,
@@ -288,7 +295,12 @@ export class TalentExploreJobsService {
   }
 
   private async countWeeklyInterests(
-    manager: { query: (sql: string, params: unknown[]) => Promise<Array<{ count: number }>> },
+    manager: {
+      query: (
+        sql: string,
+        params: unknown[],
+      ) => Promise<Array<{ count: number }>>;
+    },
     talentUserId: string,
     start: Date,
     reset: Date,

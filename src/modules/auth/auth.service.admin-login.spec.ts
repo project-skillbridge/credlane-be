@@ -5,7 +5,11 @@ import { ErrorMessages } from '../../shared';
 
 describe('AuthService.adminLogin', () => {
   let service: AuthService;
-  let usersService: { findByEmail: jest.Mock; setRefreshTokenHash: jest.Mock; recordLastLogin: jest.Mock };
+  let usersService: {
+    findByEmail: jest.Mock;
+    setRefreshTokenHash: jest.Mock;
+    recordLastLogin: jest.Mock;
+  };
   let jwtService: { signAsync: jest.Mock };
 
   const baseAdmin = {

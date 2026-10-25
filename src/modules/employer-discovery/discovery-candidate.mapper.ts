@@ -60,6 +60,8 @@ export type DiscoveryCandidateCard = {
   is_saved: boolean;
   offer_sent: boolean;
   offer_status: OfferStatus | null;
+  /** False until the employer spends an unlock; hides name, photo and links. */
+  is_unlocked: boolean;
 };
 
 function resolveRoleTrackLabel(track: string | null): string {
@@ -109,6 +111,7 @@ export function mapDiscoveryCandidateCard(
     offer_sent: boolean;
     offer_status: OfferStatus | null;
     date_added?: string | null;
+    is_unlocked?: boolean;
   },
 ): DiscoveryCandidateCard {
   const personalAnswers = readPersonalAnswers(row.personalAssessmentAnswers);
@@ -118,6 +121,7 @@ export function mapDiscoveryCandidateCard(
   const skills = resolveSkills(personalAnswers) ?? [];
   const firstName = row.firstName ?? '';
   const lastName = row.lastName ?? '';
+  const isUnlocked = context.is_unlocked ?? false;
   const lastNameInitial = lastName
     ? `${lastName.charAt(0).toUpperCase()}.`
     : '';
@@ -127,8 +131,11 @@ export function mapDiscoveryCandidateCard(
     candidate_id: row.userId,
     first_name: firstName,
     last_name_initial: lastNameInitial,
-    full_name: `${firstName} ${lastName}`.trim(),
-    avatar_url: row.avatarUrl,
+    // Locked profiles only show first name + last initial, and no photo.
+    full_name: isUnlocked
+      ? `${firstName} ${lastName}`.trim()
+      : `${firstName} ${lastNameInitial}`.trim(),
+    avatar_url: isUnlocked ? row.avatarUrl : null,
     role: resolveRoleTrackLabel(row.roleTrack),
     role_track: row.roleTrack,
     seniority_badge: seniorityBadge ?? null,
@@ -150,11 +157,12 @@ export function mapDiscoveryCandidateCard(
     availability_label: resolveAvailabilityLabel(row.availability) ?? null,
     verified_at: row.verifiedAt,
     strong_competencies: row.strongCompetencies,
-    share_token: row.shareToken,
+    share_token: isUnlocked ? row.shareToken : null,
     region: row.location ?? row.country ?? null,
     date_added: context.date_added ?? null,
     is_saved: context.is_saved,
     offer_sent: context.offer_sent,
     offer_status: context.offer_status,
+    is_unlocked: isUnlocked,
   };
 }

@@ -128,10 +128,9 @@ describe('AdminSupportService', () => {
         'ticket.created_at >= :dateFrom',
         { dateFrom: '2026-01-01' },
       );
-      expect(qb.andWhere).toHaveBeenCalledWith(
-        'ticket.created_at <= :dateTo',
-        { dateTo: '2026-01-31' },
-      );
+      expect(qb.andWhere).toHaveBeenCalledWith('ticket.created_at <= :dateTo', {
+        dateTo: '2026-01-31',
+      });
       expect(qb.andWhere).toHaveBeenCalledWith(
         'ticket.submitter_name ILIKE :search',
         { search: '%tina%' },

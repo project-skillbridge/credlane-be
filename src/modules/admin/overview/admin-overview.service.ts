@@ -245,7 +245,11 @@ export class AdminOverviewService {
 
     // How many buckets to look back
     const lookback =
-      period === 'yearly' ? '5 years' : period === 'daily' ? '30 days' : '12 months';
+      period === 'yearly'
+        ? '5 years'
+        : period === 'daily'
+          ? '30 days'
+          : '12 months';
 
     const bucketRows = await this.aiUsageLogRepo.query<
       {

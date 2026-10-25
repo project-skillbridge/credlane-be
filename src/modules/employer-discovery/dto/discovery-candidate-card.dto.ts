@@ -92,6 +92,12 @@ export class DiscoveryCandidateCardDto {
     nullable: true,
   })
   offer_status: OfferStatus | null;
+
+  @ApiProperty({
+    description:
+      'True once the employer has unlocked this profile (full name, photo, links)',
+  })
+  is_unlocked: boolean;
 }
 
 export class DiscoveryCandidatesListResponseDto {

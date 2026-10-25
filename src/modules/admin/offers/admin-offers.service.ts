@@ -38,22 +38,10 @@ const FUNNEL_STAGE_ORDER: readonly OfferStatus[] = [
  */
 const STAGE_REACHED: Record<OfferStatus, readonly OfferStatus[]> = {
   [OfferStatus.PENDING]: [OfferStatus.PENDING],
-  [OfferStatus.ACCEPTED]: [
-    OfferStatus.PENDING,
-    OfferStatus.ACCEPTED,
-  ],
-  [OfferStatus.DECLINED]: [
-    OfferStatus.PENDING,
-    OfferStatus.DECLINED,
-  ],
-  [OfferStatus.EXPIRED]: [
-    OfferStatus.PENDING,
-    OfferStatus.EXPIRED,
-  ],
-  [OfferStatus.WITHDRAWN]: [
-    OfferStatus.PENDING,
-    OfferStatus.WITHDRAWN,
-  ],
+  [OfferStatus.ACCEPTED]: [OfferStatus.PENDING, OfferStatus.ACCEPTED],
+  [OfferStatus.DECLINED]: [OfferStatus.PENDING, OfferStatus.DECLINED],
+  [OfferStatus.EXPIRED]: [OfferStatus.PENDING, OfferStatus.EXPIRED],
+  [OfferStatus.WITHDRAWN]: [OfferStatus.PENDING, OfferStatus.WITHDRAWN],
 };
 
 const STAGE_PARENT: Partial<Record<OfferStatus, OfferStatus>> = {
@@ -85,8 +73,10 @@ export class AdminOffersService {
   // ─── Stat cards ───────────────────────────────────────────────
 
   async getStats(dateFrom?: string, dateTo?: string): Promise<OffersPageStats> {
-    const { start, end, priorStart, priorEnd } =
-      this.resolvePeriod(dateFrom, dateTo);
+    const { start, end, priorStart, priorEnd } = this.resolvePeriod(
+      dateFrom,
+      dateTo,
+    );
 
     const [currentCounts, priorCounts, currentHireDays, priorHireDays] =
       await Promise.all([
@@ -165,9 +155,11 @@ export class AdminOffersService {
 
     for (const stage of FUNNEL_STAGE_ORDER) {
       const count = stageCounts.get(stage) ?? 0;
-      
+
       const parentStage = STAGE_PARENT[stage];
-      const parentCount = parentStage ? (stageCounts.get(parentStage) ?? 0) : null;
+      const parentCount = parentStage
+        ? (stageCounts.get(parentStage) ?? 0)
+        : null;
 
       if (count === 0 && parentCount === null) {
         // Skip stages with zero count before we have any data
@@ -200,11 +192,7 @@ export class AdminOffersService {
       .createQueryBuilder('offer')
       .leftJoin('offer.candidate', 'candidate')
       .leftJoin('offer.employer', 'employer')
-      .leftJoin(
-        EmployerProfile,
-        'ep',
-        'ep.user_id = offer.employer_user_id',
-      )
+      .leftJoin(EmployerProfile, 'ep', 'ep.user_id = offer.employer_user_id')
       .addSelect([
         'candidate.id',
         'candidate.first_name',
@@ -252,9 +240,7 @@ export class AdminOffersService {
     const [offers, total] = await qb.getManyAndCount();
 
     // Batch-load employer profiles for company_name
-    const employerUserIds = [
-      ...new Set(offers.map((o) => o.employer_user_id)),
-    ];
+    const employerUserIds = [...new Set(offers.map((o) => o.employer_user_id))];
     const profiles = employerUserIds.length
       ? await this.employerProfileRepo.find({
           where: employerUserIds.map((id) => ({ user_id: id })),
@@ -277,7 +263,8 @@ export class AdminOffersService {
       const employerFullname = employer
         ? `${employer.first_name ?? ''} ${employer.last_name ?? ''}`.trim()
         : '';
-      const employerName = companyName || employerFullname || 'Unknown employer';
+      const employerName =
+        companyName || employerFullname || 'Unknown employer';
 
       return {
         id: offer.id,
@@ -355,10 +342,7 @@ export class AdminOffersService {
     return { total, accepted, hired };
   }
 
-  private async avgHireDays(
-    start: Date,
-    end: Date,
-  ): Promise<number | null> {
+  private async avgHireDays(start: Date, end: Date): Promise<number | null> {
     const result: { avg_days: string | null } | undefined = await this.offerRepo
       .createQueryBuilder('offer')
       .select(

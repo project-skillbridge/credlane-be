@@ -1,38 +1,41 @@
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { inflateRawSync } from 'zlib';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { createHash } from 'crypto';
 import {
   DataSource,
   EntityManager,
   In,
+  Not,
   QueryFailedError,
   Repository,
 } from 'typeorm';
+import {
+  evaluateIntegrity,
+  type IntegrityEvents,
+  type IntegrityLevel,
+} from './assessment-integrity';
 import {
   BadRequestError,
   ConflictError,
   ErrorMessages,
   ForbiddenError,
   NotFoundError,
+  PaymentRequiredError,
   TooManyRequestsError,
 } from '../../shared';
 import { EMPLOYER_ASSESSMENT_IMPORT_MAX_FILE_BYTES } from './employer-assessments.constants';
-import {
-  AssessmentQuestion,
-  AssessmentType,
-  QuestionType,
-  VerifiedLevel,
-} from '../assessments/entities/assessment-question.entity';
 import { EmployerSavedCandidate } from '../employer-discovery/entities/employer-saved-candidate.entity';
 import { EmployerProfile } from '../employer/entities/employer-profile.entity';
 import { EmployerRole } from '../employer-roles/entities/employer-role.entity';
 import { EmployerPoolProfile } from '../talent/entities/employer-pool-profile.entity';
+import { EmployerBillingService } from '../employer-billing/employer-billing.service';
 import { MailService } from '../mail/mail.service';
 import { NotificationDispatchService } from '../notifications/notification-dispatch.service';
 import { NotificationType } from '../notifications/notification-type.enum';
 import { Offer, OfferStatus } from '../offers/entities/offer.entity';
-import { User } from '../users/entities/user.entity';
+import { User, UserRole } from '../users/entities/user.entity';
 import {
   CreateEmployerAssessmentDto,
   EmployerAssessmentQuestionInputDto,
@@ -65,23 +68,88 @@ import {
 } from './entities/employer-assessment-question.entity';
 import { EmployerAssessmentSubmission } from './entities/employer-assessment-submission.entity';
 import { CredlaneCatalogueAssessment } from './entities/credlane-catalogue-assessment.entity';
+import { CredlaneCatalogueQuestion } from './entities/credlane-catalogue-question.entity';
+import { EmployerAssessmentAttempt } from './entities/employer-assessment-attempt.entity';
+
+export type EmployerAssessmentsOverview = {
+  last30Days: {
+    assessed: number;
+    passRate: number | null;
+    averageScore: number | null;
+    /** Results whose integrity level is "review" or "flagged". */
+    needsReview: number;
+  };
+  activeAssessments: number;
+  recent: Array<{
+    id: string;
+    assessmentId: string;
+    assessmentTitle: string;
+    source: 'talent' | 'external';
+    candidateName: string | null;
+    email: string | null;
+    score: number;
+    passed: boolean;
+    integrityLevel: IntegrityLevel | null;
+    completedAt: Date;
+  }>;
+};
+
+export type AssessmentResultRow = {
+  id: string;
+  source: 'talent' | 'external';
+  candidateUserId: string | null;
+  candidateName: string | null;
+  email: string | null;
+  score: number;
+  status: 'pass' | 'fail';
+  timeTakenSeconds: number | null;
+  dateCompleted: Date;
+  deliveryMode: string | null;
+  /** Clean, needs review or flagged; null when nothing was recorded. */
+  integrityLevel: IntegrityLevel | null;
+  integrityReasons: string[];
+  /** Set when a link taker later made a verified SkillSift account with the same email. */
+  joinedSkillsiftUserId: string | null;
+  /** 1-based rank by score across every submission; ties share a rank. */
+  rank: number;
+  /** Share of the other candidates this one outscored; null under 3 submissions. */
+  percentile: number | null;
+};
+
+export type AssessmentResultsSummary = {
+  total: number;
+  averageScore: number | null;
+  medianScore: number | null;
+  topScore: number | null;
+  passRate: number | null;
+};
 
 export type AssessmentListResultsResponse = {
-  submissions: Array<{
-    id: string;
-    candidateUserId: string;
-    candidateName: string | null;
-    score: number;
-    status: string;
-    timeTakenSeconds: number;
-    dateCompleted: Date;
-    deliveryMode: string;
-  }>;
+  submissions: AssessmentResultRow[];
+  summary: AssessmentResultsSummary;
   total: number;
   page: number;
   limit: number;
   totalPages: number;
   emptyState: string | null;
+};
+
+export type AssessmentResultDetail = AssessmentResultRow & {
+  questions: Array<{
+    questionId: string;
+    position: number;
+    questionText: string;
+    questionType: string;
+    options: string[] | null;
+    /** Null for library assessments: SkillSift keeps that answer key private. */
+    correctAnswer: string | null;
+    givenAnswer: string | null;
+    isCorrect: boolean;
+  }>;
+  correctCount: number;
+  questionCount: number;
+  /** Raw browser signals behind the integrity level, for the report. */
+  integrityEvents: IntegrityEvents | null;
 };
 
 const ACTIVE_ASSESSMENT_LIMIT = 5;
@@ -119,6 +187,36 @@ export type QuestionImportValidationResult = {
   questionCount: number;
 };
 
+type PublicQuestion = {
+  id: string;
+  position: number;
+  question_text: string;
+  question_type: string;
+  options: string[] | null;
+};
+
+const ACCESS_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/** Short code with no look-alike characters, easy to read out or message. */
+function generateAccessCode(length = 6): string {
+  const bytes = randomBytes(length);
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += ACCESS_CODE_ALPHABET[bytes[i] % ACCESS_CODE_ALPHABET.length];
+  }
+  return code;
+}
+
+/** Talent only exist for employers after finishing the job evaluation as job ready. */
+const FINISHED_JOB_EVALUATION_SQL = `EXISTS (
+  SELECT 1 FROM assessment_attempts att
+  INNER JOIN assessment_results res ON res.attempt_id = att.id
+  WHERE att.talent_profile_id = pool.talent_profile_id
+    AND att.assessment_type = 'advanced'
+    AND att.completed_at IS NOT NULL
+    AND res.tier = 'job_ready'
+)`;
+
 @Injectable()
 export class EmployerAssessmentsService {
   private readonly logger = new Logger(EmployerAssessmentsService.name);
@@ -134,8 +232,10 @@ export class EmployerAssessmentsService {
     private readonly inviteRepo: Repository<EmployerAssessmentInvite>,
     @InjectRepository(EmployerAssessmentSubmission)
     private readonly submissionRepo: Repository<EmployerAssessmentSubmission>,
-    @InjectRepository(AssessmentQuestion)
-    private readonly bankQuestionRepo: Repository<AssessmentQuestion>,
+    @InjectRepository(EmployerAssessmentAttempt)
+    private readonly attemptRepo: Repository<EmployerAssessmentAttempt>,
+    @InjectRepository(CredlaneCatalogueQuestion)
+    private readonly catalogueQuestionRepo: Repository<CredlaneCatalogueQuestion>,
     @InjectRepository(EmployerSavedCandidate)
     private readonly savedCandidateRepo: Repository<EmployerSavedCandidate>,
     @InjectRepository(EmployerPoolProfile)
@@ -158,6 +258,7 @@ export class EmployerAssessmentsService {
     private readonly catalogueRepo: Repository<CredlaneCatalogueAssessment>,
     private readonly notificationDispatch: NotificationDispatchService,
     private readonly mailService: MailService,
+    private readonly billingService: EmployerBillingService,
   ) {}
 
   async createAssessment(
@@ -237,6 +338,12 @@ export class EmployerAssessmentsService {
           role_track: dto.roleTrack.trim(),
           experience_level: dto.experienceLevel,
           time_limit_minutes: dto.timeLimitMinutes,
+          welcome_message: dto.welcomeMessage?.trim() || null,
+          access_code:
+            (dto.type ?? EmployerAssessmentType.INTERNAL) ===
+            EmployerAssessmentType.EXTERNAL
+              ? generateAccessCode()
+              : null,
           passing_threshold: dto.passingThreshold,
           question_source: dto.questionSource,
           credlane_assessment_id:
@@ -292,9 +399,207 @@ export class EmployerAssessmentsService {
     });
   }
 
+  /** Per-assessment invite/submission aggregates for the list view. */
+  private async loadAssessmentStats(ids: string[]): Promise<
+    Map<
+      string,
+      {
+        talents: number;
+        submissions: number;
+        passed: number;
+        lastActivityAt: Date | null;
+      }
+    >
+  > {
+    const out = new Map<
+      string,
+      {
+        talents: number;
+        submissions: number;
+        passed: number;
+        lastActivityAt: Date | null;
+      }
+    >();
+    if (!ids.length) return out;
+    const entry = (id: string) => {
+      let e = out.get(id);
+      if (!e) {
+        e = { talents: 0, submissions: 0, passed: 0, lastActivityAt: null };
+        out.set(id, e);
+      }
+      return e;
+    };
+    const bump = (e: { lastActivityAt: Date | null }, at: Date | string) => {
+      const d = new Date(at);
+      if (!e.lastActivityAt || d > e.lastActivityAt) e.lastActivityAt = d;
+    };
+
+    const [invites, extInvites, subs, extSubs] = await Promise.all([
+      this.inviteRepo
+        .createQueryBuilder('i')
+        .select('i.assessment_id', 'id')
+        .addSelect('COUNT(*)', 'count')
+        .addSelect('MAX(i.sent_at)', 'last')
+        .where('i.assessment_id IN (:...ids)', { ids })
+        .groupBy('i.assessment_id')
+        .getRawMany<{ id: string; count: string; last: string }>(),
+      this.externalInviteRepo
+        .createQueryBuilder('i')
+        .select('i.assessment_id', 'id')
+        .addSelect('COUNT(*)', 'count')
+        .addSelect('MAX(i.sent_at)', 'last')
+        .where('i.assessment_id IN (:...ids)', { ids })
+        .groupBy('i.assessment_id')
+        .getRawMany<{ id: string; count: string; last: string }>(),
+      this.submissionRepo
+        .createQueryBuilder('s')
+        .select('s.assessment_id', 'id')
+        .addSelect('COUNT(*)', 'count')
+        .addSelect('COUNT(*) FILTER (WHERE s.passed)', 'passed')
+        .addSelect('MAX(s.completed_at)', 'last')
+        .where('s.assessment_id IN (:...ids)', { ids })
+        .groupBy('s.assessment_id')
+        .getRawMany<{
+          id: string;
+          count: string;
+          passed: string;
+          last: string;
+        }>(),
+      this.externalSubmissionRepo
+        .createQueryBuilder('s')
+        .select('s.assessment_id', 'id')
+        .addSelect('COUNT(*)', 'count')
+        .addSelect('COUNT(*) FILTER (WHERE s.passed)', 'passed')
+        .addSelect('MAX(s.submitted_at)', 'last')
+        .where('s.assessment_id IN (:...ids)', { ids })
+        .groupBy('s.assessment_id')
+        .getRawMany<{
+          id: string;
+          count: string;
+          passed: string;
+          last: string;
+        }>(),
+    ]);
+
+    for (const r of [...invites, ...extInvites]) {
+      const e = entry(r.id);
+      e.talents += parseInt(r.count, 10);
+      if (r.last) bump(e, r.last);
+    }
+    for (const r of [...subs, ...extSubs]) {
+      const e = entry(r.id);
+      e.submissions += parseInt(r.count, 10);
+      e.passed += parseInt(r.passed, 10);
+      if (r.last) bump(e, r.last);
+    }
+    return out;
+  }
+
+  /** Headline numbers and the latest completions across all of an employer's assessments. */
+  async getEmployerOverview(
+    employerUserId: string,
+  ): Promise<EmployerAssessmentsOverview> {
+    await this.ensureVerifiedEmployer(employerUserId);
+    const assessments = await this.assessmentRepo.find({
+      where: { employer_user_id: employerUserId },
+      select: ['id', 'title', 'is_active'],
+    });
+    const empty: EmployerAssessmentsOverview = {
+      last30Days: {
+        assessed: 0,
+        passRate: null,
+        averageScore: null,
+        needsReview: 0,
+      },
+      activeAssessments: assessments.filter((a) => a.is_active).length,
+      recent: [],
+    };
+    if (assessments.length === 0) return empty;
+
+    const ids = assessments.map((a) => a.id);
+    const titleById = new Map(assessments.map((a) => [a.id, a.title]));
+    const [internal, external] = await Promise.all([
+      this.submissionRepo.find({
+        where: { assessment_id: In(ids) },
+        relations: ['candidate'],
+        order: { completed_at: 'DESC' },
+        take: 300,
+      }),
+      this.externalSubmissionRepo.find({
+        where: { assessment_id: In(ids) },
+        relations: ['external_applicant'],
+        order: { submitted_at: 'DESC' },
+        take: 300,
+      }),
+    ]);
+
+    const rows: EmployerAssessmentsOverview['recent'] = [
+      ...internal.map((submission) => ({
+        id: submission.id,
+        assessmentId: submission.assessment_id,
+        assessmentTitle: titleById.get(submission.assessment_id) ?? '',
+        source: 'talent' as const,
+        candidateName:
+          `${submission.candidate?.first_name ?? ''} ${
+            submission.candidate?.last_name ?? ''
+          }`.trim() || null,
+        email: null,
+        score: submission.score,
+        passed: submission.passed,
+        integrityLevel: submission.integrity_level ?? null,
+        completedAt: submission.completed_at,
+      })),
+      ...external.map((submission) => ({
+        id: submission.id,
+        assessmentId: submission.assessment_id,
+        assessmentTitle: titleById.get(submission.assessment_id) ?? '',
+        source: 'external' as const,
+        candidateName: submission.external_applicant?.full_name ?? null,
+        email: submission.external_applicant?.email ?? null,
+        score: submission.score,
+        passed: submission.passed,
+        integrityLevel: submission.integrity_level ?? null,
+        completedAt: submission.submitted_at,
+      })),
+    ].sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
+
+    const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const recentWindow = rows.filter(
+      (row) => row.completedAt.getTime() >= since,
+    );
+    const scores = recentWindow.map((row) => row.score);
+    return {
+      last30Days: {
+        assessed: recentWindow.length,
+        passRate: recentWindow.length
+          ? Math.round(
+              (recentWindow.filter((row) => row.passed).length /
+                recentWindow.length) *
+                100,
+            )
+          : null,
+        averageScore: scores.length
+          ? Math.round(scores.reduce((sum, n) => sum + n, 0) / scores.length)
+          : null,
+        needsReview: recentWindow.filter(
+          (row) =>
+            row.integrityLevel === 'review' || row.integrityLevel === 'flagged',
+        ).length,
+      },
+      activeAssessments: empty.activeAssessments,
+      recent: rows.slice(0, 6),
+    };
+  }
+
   async listAssessments(employerUserId: string): Promise<{
     assessments: Array<
-      EmployerAssessment & { submission_count: number; status: string }
+      EmployerAssessment & {
+        submission_count: number;
+        talents_count: number;
+        pass_rate: number | null;
+        last_activity_at: Date | null;
+        status: string;
+      }
     >;
     emptyState: string | null;
   }> {
@@ -305,32 +610,26 @@ export class EmployerAssessmentsService {
       relations: ['questions'],
     });
 
-    const submissionCounts: Array<{ assessmentId: string; count: string }> =
-      assessments.length
-        ? await this.submissionRepo
-            .createQueryBuilder('sub')
-            .select('sub.assessment_id', 'assessmentId')
-            .addSelect('COUNT(*)', 'count')
-            .where('sub.assessment_id IN (:...ids)', {
-              ids: assessments.map((a) => a.id),
-            })
-            .groupBy('sub.assessment_id')
-            .getRawMany()
-        : [];
-
-    const countMap = new Map(
-      submissionCounts.map((r) => [r.assessmentId, parseInt(r.count, 10)]),
-    );
+    const ids = assessments.map((a) => a.id);
+    const stats = await this.loadAssessmentStats(ids);
 
     return {
-      assessments: assessments.map((a) => ({
-        ...a,
-        token:
-          a.type === EmployerAssessmentType.EXTERNAL ? a.share_token : null,
-        share_url: this.buildShareUrl(a.share_token),
-        submission_count: countMap.get(a.id) ?? 0,
-        status: a.is_active ? 'active' : 'inactive',
-      })),
+      assessments: assessments.map((a) => {
+        const st = stats.get(a.id);
+        return {
+          ...a,
+          token:
+            a.type === EmployerAssessmentType.EXTERNAL ? a.share_token : null,
+          share_url: this.buildShareUrl(a.share_token),
+          submission_count: st?.submissions ?? 0,
+          talents_count: st?.talents ?? 0,
+          pass_rate: st?.submissions
+            ? Math.round((st.passed / st.submissions) * 100)
+            : null,
+          last_activity_at: st?.lastActivityAt ?? null,
+          status: a.is_active ? 'active' : 'inactive',
+        };
+      }),
       emptyState:
         assessments.length === 0
           ? 'No assessments yet. Create your first assessment to start screening candidates.'
@@ -338,10 +637,45 @@ export class EmployerAssessmentsService {
     };
   }
 
+  /** Library assessments with enough questions to be used, optionally filtered. */
+  private async loadUsableCatalogue(filters: {
+    roleTrack?: string;
+    experienceLevel?: EmployerAssessmentExperienceLevel;
+  }): Promise<Array<{ entry: CredlaneCatalogueAssessment; count: number }>> {
+    const where: Record<string, unknown> = { is_active: true };
+    if (filters.roleTrack) where.role_track = filters.roleTrack;
+    if (filters.experienceLevel)
+      where.experience_level = filters.experienceLevel;
+    const entries = await this.catalogueRepo.find({
+      where,
+      order: { role_track: 'ASC', experience_level: 'ASC', title: 'ASC' },
+    });
+    if (entries.length === 0) return [];
+
+    const counts = await this.catalogueQuestionRepo
+      .createQueryBuilder('q')
+      .select('q.catalogue_assessment_id', 'id')
+      .addSelect('COUNT(*)', 'count')
+      .where('q.catalogue_assessment_id IN (:...ids)', {
+        ids: entries.map((entry) => entry.id),
+      })
+      .groupBy('q.catalogue_assessment_id')
+      .getRawMany<{ id: string; count: string }>();
+    const countById = new Map(counts.map((row) => [row.id, Number(row.count)]));
+
+    return entries
+      .map((entry) => ({ entry, count: countById.get(entry.id) ?? 0 }))
+      .filter(({ count }) => count >= MIN_COMPANY_QUESTIONS);
+  }
+
   async listCredlaneCatalogue(
     employerUserId: string,
     page = 1,
     limit = 20,
+    filters: {
+      roleTrack?: string;
+      experienceLevel?: EmployerAssessmentExperienceLevel;
+    } = {},
   ): Promise<{
     catalogue: {
       id: string;
@@ -350,6 +684,7 @@ export class EmployerAssessmentsService {
       estimated_completion_time: string;
       role_track: string;
       experience_level: EmployerAssessmentExperienceLevel;
+      question_count: number;
     }[];
     total: number;
     page: number;
@@ -357,25 +692,54 @@ export class EmployerAssessmentsService {
     totalPages: number;
   }> {
     await this.ensureVerifiedEmployer(employerUserId);
-    const [entries, total] = await this.catalogueRepo.findAndCount({
-      where: { is_active: true },
-      order: { role_track: 'ASC', experience_level: 'ASC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const usable = await this.loadUsableCatalogue(filters);
+    const pageRows = usable.slice((page - 1) * limit, page * limit);
     return {
-      catalogue: entries.map((entry) => ({
+      catalogue: pageRows.map(({ entry, count }) => ({
         id: entry.id,
         title: entry.title,
         description: entry.description,
         estimated_completion_time: entry.estimated_completion_time,
         role_track: entry.role_track,
         experience_level: entry.experience_level,
+        question_count: count,
       })),
-      total,
+      total: usable.length,
       page,
       limit,
-      totalPages: Math.ceil(total / limit),
+      totalPages: Math.ceil(usable.length / limit),
+    };
+  }
+
+  /** Preview of a library assessment. Never includes the answer key. */
+  async getCredlaneCatalogueEntry(employerUserId: string, id: string) {
+    await this.ensureVerifiedEmployer(employerUserId);
+    const entry = await this.catalogueRepo.findOne({
+      where: { id, is_active: true },
+    });
+    const questions = entry
+      ? await this.catalogueQuestionRepo.find({
+          where: { catalogue_assessment_id: entry.id },
+          order: { position: 'ASC' },
+        })
+      : [];
+    if (!entry || questions.length < MIN_COMPANY_QUESTIONS) {
+      throw new NotFoundError('Library assessment not found');
+    }
+    return {
+      id: entry.id,
+      title: entry.title,
+      description: entry.description,
+      estimated_completion_time: entry.estimated_completion_time,
+      role_track: entry.role_track,
+      experience_level: entry.experience_level,
+      question_count: questions.length,
+      questions: questions.map((question) => ({
+        position: question.position,
+        questionText: question.question_text,
+        questionType: question.question_type,
+        options: question.options,
+      })),
     };
   }
 
@@ -406,7 +770,23 @@ export class EmployerAssessmentsService {
       resultQuery ?? {},
     );
 
+    const stats = (await this.loadAssessmentStats([assessment.id])).get(
+      assessment.id,
+    );
+
+    // Library questions belong to SkillSift: employers never get the key.
+    if (
+      assessment.question_source ===
+      EmployerAssessmentQuestionSource.CREDLANE_BANK
+    ) {
+      assessment.questions = (assessment.questions ?? []).map((question) => ({
+        ...question,
+        correct_answer: '',
+      }));
+    }
+
     return Object.assign(assessment, {
+      talents_count: stats?.talents ?? 0,
       shareUrl: this.buildShareUrl(assessment.share_token),
       share_url: this.buildShareUrl(assessment.share_token),
       token:
@@ -470,18 +850,29 @@ export class EmployerAssessmentsService {
       );
       const nextTalentIds = talentIds.filter((id) => !alreadyInvited.has(id));
 
-      const users = nextTalentIds.length
-        ? await this.userRepo.findBy({ id: In(nextTalentIds) })
+      const eligible = nextTalentIds.length
+        ? await this.poolProfileRepo
+            .createQueryBuilder('pool')
+            .select('pool.candidate_id', 'id')
+            .where('pool.candidate_id IN (:...ids)', { ids: nextTalentIds })
+            .andWhere("pool.tier = 'job_ready'")
+            .andWhere(FINISHED_JOB_EVALUATION_SQL)
+            .getRawMany<{ id: string }>()
         : [];
-      const existingUsers = new Set(users.map((user) => user.id));
+      const existingUsers = new Set(eligible.map((row) => row.id));
       const failed = nextTalentIds
         .filter((id) => !existingUsers.has(id))
-        .map((id) => ({ target: id, reason: 'Talent user not found' }));
+        .map((id) => ({ target: id, reason: 'Talent not found' }));
       const invitableTalentIds = nextTalentIds.filter((id) =>
         existingUsers.has(id),
       );
 
       if (invitableTalentIds.length > 0) {
+        // Charge before sending so an employer out of invites sends nothing.
+        await this.billingService.spendInvites(
+          employerUserId,
+          invitableTalentIds.length,
+        );
         await this.inviteRepo.save(
           invitableTalentIds.map((candidateUserId) => ({
             assessment_id: assessmentId,
@@ -514,6 +905,7 @@ export class EmployerAssessmentsService {
     const nextEmails = emails.filter((email) => !alreadyInvited.has(email));
 
     if (nextEmails.length > 0) {
+      await this.billingService.spendInvites(employerUserId, nextEmails.length);
       await this.externalInviteRepo.save(
         nextEmails.map((email) => ({
           assessment_id: assessmentId,
@@ -527,7 +919,7 @@ export class EmployerAssessmentsService {
         this.mailService.send({
           to: email,
           subject: `Assessment invite: ${assessment.title}`,
-          text: `You have been invited to take ${assessment.title}. Open ${this.buildShareUrl(assessment.share_token)} to begin.`,
+          text: `You have been invited to take ${assessment.title}. Open ${this.buildShareUrl(assessment.share_token)} and sign in with your name, email and this access code: ${assessment.access_code ?? ''}`,
         }),
       ),
     );
@@ -547,6 +939,8 @@ export class EmployerAssessmentsService {
         (result): result is { target: string; reason: string } =>
           result !== null,
       );
+    // Nobody was invited by a bounced email, so don't charge for it.
+    await this.billingService.refundInvites(employerUserId, failed.length);
 
     return {
       invited_count: nextEmails.length - failed.length,
@@ -585,21 +979,47 @@ export class EmployerAssessmentsService {
     assessment_id: string;
     type: 'external';
     share_url: string;
+    access_code: string | null;
   }> {
     const tokenPayload = await this.getAssessmentToken(
       employerUserId,
       assessmentId,
     );
+    const assessment = await this.assessmentRepo.findOne({
+      where: { id: assessmentId, employer_user_id: employerUserId },
+      select: ['id', 'access_code'],
+    });
     return {
       ...tokenPayload,
       share_url: this.buildShareUrl(tokenPayload.token),
+      access_code: assessment?.access_code ?? null,
     };
+  }
+
+  /** Issues a fresh code; the old one stops working straight away. */
+  async regenerateAccessCode(
+    employerUserId: string,
+    assessmentId: string,
+  ): Promise<{ access_code: string }> {
+    await this.ensureVerifiedEmployer(employerUserId);
+    const code = generateAccessCode();
+    const res = await this.assessmentRepo.update(
+      {
+        id: assessmentId,
+        employer_user_id: employerUserId,
+        type: EmployerAssessmentType.EXTERNAL,
+      },
+      { access_code: code },
+    );
+    if (!res.affected) throw new NotFoundError('External assessment not found');
+    return { access_code: code };
   }
 
   async searchVerifiedTalent(
     employerUserId: string,
     q = '',
     limit = 10,
+    track?: string,
   ): Promise<{
     results: Array<Record<string, unknown>>;
   }> {
@@ -608,35 +1028,52 @@ export class EmployerAssessmentsService {
     const qb = this.poolProfileRepo
       .createQueryBuilder('pool')
       .innerJoin(User, 'u', 'u.id = pool.candidate_id')
-      .where('pool.tier = :tier', { tier: 'job_ready' });
+      .where('pool.tier = :tier', { tier: 'job_ready' })
+      .andWhere(FINISHED_JOB_EVALUATION_SQL);
 
     if (search) {
       qb.andWhere(
-        `(u.email ILIKE :search OR u.first_name ILIKE :search OR u.last_name ILIKE :search OR CONCAT(u.first_name, ' ', u.last_name) ILIKE :search)`,
+        `(u.first_name ILIKE :search OR u.last_name ILIKE :search OR CONCAT(u.first_name, ' ', u.last_name) ILIKE :search)`,
         { search: `%${search}%` },
       );
     }
 
+    qb.select([
+      'u.id AS "userId"',
+      'u.first_name AS "firstName"',
+      'u.last_name AS "lastName"',
+      'pool.track AS "roleTrack"',
+      'pool.verified_level AS "verifiedLevel"',
+    ]);
+
+    // Talent on the requested track first, then most recently verified.
+    if (track) {
+      qb.setParameter('track', track).orderBy(
+        '(CASE WHEN pool.track = :track THEN 0 ELSE 1 END)',
+        'ASC',
+      );
+      qb.addOrderBy('pool.verified_at', 'DESC');
+    } else {
+      qb.orderBy('pool.verified_at', 'DESC');
+    }
+
     const rows = await qb
-      .select([
-        'u.id AS "userId"',
-        'u.first_name AS "firstName"',
-        'u.last_name AS "lastName"',
-        'u.email AS "email"',
-        'u.avatar_url AS "avatarUrl"',
-        'pool.track AS "roleTrack"',
-        'pool.verified_level AS "verifiedLevel"',
-      ])
-      .orderBy('pool.verified_at', 'DESC')
       .limit(Math.min(Math.max(limit, 1), 50))
       .getRawMany<Record<string, string | null>>();
+
+    // Names stay masked (first name + last initial) until the employer
+    // has unlocked that candidate.
+    const unlocked = await this.billingService.getUnlockedIds(
+      employerUserId,
+      rows.map((row) => row.userId as string),
+    );
 
     return {
       results: rows.map((row) => ({
         user_id: row.userId,
-        full_name: `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim(),
-        email: row.email,
-        avatar_url: row.avatarUrl,
+        full_name: unlocked.has(row.userId as string)
+          ? `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim()
+          : `${row.firstName ?? ''} ${(row.lastName ?? '').charAt(0).toUpperCase()}${row.lastName ? '.' : ''}`.trim(),
         role: row.verifiedLevel,
         role_track: row.roleTrack,
       })),
@@ -659,20 +1096,33 @@ export class EmployerAssessmentsService {
         'This assessment is no longer accepting submissions.',
       );
     }
+    const profile = await this.employerProfileRepo.findOne({
+      where: { user_id: assessment.employer_user_id },
+    });
     return {
       id: assessment.id,
       title: assessment.title,
+      type: assessment.type,
+      employer_name: profile?.company_name ?? null,
+      welcome_message: assessment.welcome_message,
       role_track: assessment.role_track,
       experience_level: assessment.experience_level,
       time_limit_minutes: assessment.time_limit_minutes,
       passing_threshold: assessment.passing_threshold,
-      questions: assessment.questions.map((question) => ({
-        id: question.id,
-        position: question.position,
-        question_text: question.question_text,
-        question_type: question.question_type,
-        options: question.options,
-      })),
+      question_count: assessment.questions.length,
+      requires_access_code: assessment.type === EmployerAssessmentType.EXTERNAL,
+      // Link assessments stay locked until the candidate signs in with the
+      // employer's access code; the questions come back from registration.
+      questions:
+        assessment.type === EmployerAssessmentType.EXTERNAL
+          ? []
+          : assessment.questions.map((question) => ({
+              id: question.id,
+              position: question.position,
+              question_text: question.question_text,
+              question_type: question.question_type,
+              options: question.options,
+            })),
     };
   }
 
@@ -681,6 +1131,7 @@ export class EmployerAssessmentsService {
     title: string;
     employer_name: string | null;
     employer_logo_url: string | null;
+    welcome_message: string | null;
     modules: Array<Record<string, unknown>>;
     deadline: null;
     is_expired: boolean;
@@ -713,18 +1164,14 @@ export class EmployerAssessmentsService {
         }`.trim() ??
         null,
       employer_logo_url: assessment.employer?.avatar_url ?? null,
+      welcome_message: assessment.welcome_message,
       modules: [
         {
           id: assessment.id,
           title: assessment.title,
           time_limit_minutes: assessment.time_limit_minutes,
-          questions: assessment.questions.map((question) => ({
-            id: question.id,
-            position: question.position,
-            question_text: question.question_text,
-            question_type: question.question_type,
-            options: question.options,
-          })),
+          // Questions are only released after the candidate signs in.
+          questions: [],
         },
       ],
       deadline: null,
@@ -735,13 +1182,20 @@ export class EmployerAssessmentsService {
   async registerExternalApplicant(
     token: string,
     dto: RegisterExternalAssessmentDto,
+    ip?: string,
   ): Promise<{
     external_applicant_id: string;
     email: string;
     session_token: string;
+    time_limit_minutes: number;
+    remaining_seconds: number;
+    submitted: boolean;
+    questions: PublicQuestion[];
   }> {
     const assessment = await this.assessmentRepo.findOne({
       where: { share_token: token, type: EmployerAssessmentType.EXTERNAL },
+      relations: ['questions'],
+      order: { questions: { position: 'ASC' } },
     });
     if (!assessment) {
       throw new NotFoundError('Assessment not found');
@@ -751,33 +1205,110 @@ export class EmployerAssessmentsService {
         'This assessment is no longer accepting submissions.',
       );
     }
+    if (!this.accessCodeMatches(assessment.access_code, dto.accessCode)) {
+      throw new ForbiddenError(
+        'That access code is not right. Check it with the employer and try again.',
+      );
+    }
+    const questions = this.toPublicQuestions(assessment.questions);
 
     const email = dto.email.toLowerCase();
+    const fullName = dto.fullName.trim().replace(/\s+/g, ' ');
     const existing = await this.externalApplicantRepo.findOne({
       where: { assessment_id: assessment.id, email },
     });
     if (existing) {
+      const done = await this.externalSubmissionRepo.count({
+        where: { external_applicant_id: existing.id },
+      });
       return {
         external_applicant_id: existing.id,
         email: existing.email,
         session_token: existing.session_token,
+        time_limit_minutes: assessment.time_limit_minutes,
+        remaining_seconds: this.remainingSeconds(
+          existing.created_at,
+          assessment.time_limit_minutes,
+        ),
+        submitted: done > 0,
+        questions: done > 0 ? [] : questions,
       };
+    }
+
+    // People invited by email were charged when invited; walk-ins through the
+    // share link are charged when they start.
+    const wasInvited = await this.externalInviteRepo.findOne({
+      where: { assessment_id: assessment.id, email },
+    });
+    if (!wasInvited) {
+      try {
+        await this.billingService.spendInvites(assessment.employer_user_id, 1);
+      } catch (error: unknown) {
+        if (error instanceof PaymentRequiredError) {
+          throw new ForbiddenError(
+            "This assessment isn't taking new candidates right now. Please contact the employer.",
+          );
+        }
+        throw error;
+      }
     }
 
     const applicant = await this.externalApplicantRepo.save({
       assessment_id: assessment.id,
       email,
+      full_name: fullName,
       consented_marketing: dto.consentedMarketing,
       consented_at: new Date(),
       session_token: randomBytes(36).toString('hex'),
       session_expires_at: new Date(Date.now() + EXTERNAL_SESSION_TTL_MS),
+      ip_hash: ip ? this.hashIp(assessment.id, ip) : null,
     } as Partial<EmployerAssessmentExternalApplicant>);
 
     return {
       external_applicant_id: applicant.id,
       email: applicant.email,
       session_token: applicant.session_token,
+      time_limit_minutes: assessment.time_limit_minutes,
+      remaining_seconds: assessment.time_limit_minutes * 60,
+      submitted: false,
+      questions,
     };
+  }
+
+  private toPublicQuestions(
+    questions: EmployerAssessmentQuestion[],
+  ): PublicQuestion[] {
+    return questions.map((question) => ({
+      id: question.id,
+      position: question.position,
+      question_text: question.question_text,
+      question_type: question.question_type,
+      options: question.options,
+    }));
+  }
+
+  /** Case-insensitive, constant-time check of the employer's access code. */
+  private accessCodeMatches(
+    expected: string | null,
+    given: string | undefined,
+  ): boolean {
+    if (!expected || !given) return false;
+    const a = Buffer.from(expected.trim().toUpperCase());
+    const b = Buffer.from(given.trim().toUpperCase());
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  /** One-way hash so we can spot shared networks without storing IPs. */
+  private hashIp(assessmentId: string, ip: string): string {
+    return createHash('sha256').update(`${assessmentId}:${ip}`).digest('hex');
+  }
+
+  private elapsedSeconds(startedAt: Date): number {
+    return Math.max(0, Math.round((Date.now() - startedAt.getTime()) / 1000));
+  }
+
+  private remainingSeconds(startedAt: Date, limitMinutes: number): number {
+    return Math.max(0, limitMinutes * 60 - this.elapsedSeconds(startedAt));
   }
 
   async submitExternalAssessment(
@@ -826,36 +1357,65 @@ export class EmployerAssessmentsService {
     const answers = this.flattenExternalResponses(dto.responses);
     const score = this.computeScore(assessment.questions, answers);
     const passed = score >= assessment.passing_threshold;
+    // Registration is the start of the clock, so this can't be faked client side.
+    const elapsed = this.elapsedSeconds(applicant.created_at);
+    const sharedNetwork = applicant.ip_hash
+      ? (await this.externalApplicantRepo.count({
+          where: {
+            assessment_id: assessment.id,
+            ip_hash: applicant.ip_hash,
+            id: Not(applicant.id),
+          },
+        })) > 0
+      : false;
+    const integrity = evaluateIntegrity({
+      events: dto.integrity,
+      elapsedSeconds: elapsed,
+      timeLimitSeconds: assessment.time_limit_minutes * 60,
+      questionCount: assessment.questions.length,
+      sharedNetwork,
+    });
     const submission = await this.externalSubmissionRepo.save({
       assessment_id: assessment.id,
       external_applicant_id: applicant.id,
       responses: dto.responses as unknown as Record<string, unknown>[],
       score,
       passed,
+      time_taken_seconds: elapsed,
+      integrity,
+      integrity_level: integrity.level,
     } as Partial<EmployerAssessmentExternalSubmission>);
 
-    await this.notificationDispatch.dispatch(
-      NotificationType.ASSESSMENT_COMPLETED,
-      assessment.employer_user_id,
-      {
-        assessment_id: assessment.id,
-        submission_id: submission.id,
-        external_applicant_id: applicant.id,
-        email: applicant.email,
-        score,
-        passed,
-      },
-    );
+    // The submission is saved; telling the employer is best effort.
+    try {
+      await this.notificationDispatch.dispatch(
+        NotificationType.ASSESSMENT_COMPLETED,
+        assessment.employer_user_id,
+        {
+          assessment_id: assessment.id,
+          submission_id: submission.id,
+          external_applicant_id: applicant.id,
+          email: applicant.email,
+          score,
+          passed,
+        },
+      );
 
-    const employer = await this.userRepo.findOne({
-      where: { id: assessment.employer_user_id },
-    });
-    if (employer) {
-      await this.mailService.send({
-        to: employer.email,
-        subject: `External assessment completed: ${assessment.title}`,
-        text: `${applicant.email} completed ${assessment.title}. Score: ${score}%. Result: ${passed ? 'pass' : 'fail'}. Log in to review the submission.`,
+      const employer = await this.userRepo.findOne({
+        where: { id: assessment.employer_user_id },
       });
+      if (employer) {
+        await this.mailService.send({
+          to: employer.email,
+          subject: `External assessment completed: ${assessment.title}`,
+          text: `${applicant.email} completed ${assessment.title}. Score: ${score}%. Result: ${passed ? 'pass' : 'fail'}. Log in to review the submission.`,
+        });
+      }
+    } catch (error: unknown) {
+      this.logger.error(
+        `Failed to notify employer about external submission ${submission.id}`,
+        error instanceof Error ? error.stack : String(error),
+      );
     }
 
     return {
@@ -873,6 +1433,89 @@ export class EmployerAssessmentsService {
       }
       return acc;
     }, {});
+  }
+
+  /** Opens (or resumes) an attempt so the time limit is measured on the server. */
+  /** Only talent the employer sent an internal assessment to may take it. */
+  private async assertInvitedToInternal(
+    assessment: EmployerAssessment,
+    candidateUserId: string,
+  ): Promise<void> {
+    if (assessment.type !== EmployerAssessmentType.INTERNAL) return;
+    const invited = await this.inviteRepo.count({
+      where: {
+        assessment_id: assessment.id,
+        candidate_user_id: candidateUserId,
+      },
+    });
+    if (invited === 0) {
+      throw new ForbiddenError(
+        'This assessment is only open to talent the employer has invited.',
+      );
+    }
+  }
+
+  async startAssessment(
+    candidateUserId: string,
+    token: string,
+  ): Promise<{
+    started_at: Date;
+    time_limit_seconds: number;
+    remaining_seconds: number;
+  }> {
+    const assessment = await this.assessmentRepo.findOne({
+      where: { share_token: token },
+    });
+    if (!assessment) {
+      throw new NotFoundError('Assessment not found');
+    }
+    if (!assessment.is_active) {
+      throw new ForbiddenError(
+        'This assessment is no longer accepting submissions.',
+      );
+    }
+    await this.assertInvitedToInternal(assessment, candidateUserId);
+    const submitted = await this.submissionRepo.count({
+      where: {
+        assessment_id: assessment.id,
+        candidate_user_id: candidateUserId,
+      },
+    });
+    if (submitted > 0) {
+      throw new ConflictError('You have already submitted this assessment.');
+    }
+
+    let attempt = await this.attemptRepo.findOne({
+      where: {
+        assessment_id: assessment.id,
+        candidate_user_id: candidateUserId,
+      },
+    });
+    if (!attempt) {
+      try {
+        attempt = await this.attemptRepo.save({
+          assessment_id: assessment.id,
+          candidate_user_id: candidateUserId,
+        } as Partial<EmployerAssessmentAttempt> as EmployerAssessmentAttempt);
+      } catch (error: unknown) {
+        if (!isPostgresUniqueViolation(error)) throw error;
+        // Two tabs raced; use whichever attempt won.
+        attempt = await this.attemptRepo.findOneOrFail({
+          where: {
+            assessment_id: assessment.id,
+            candidate_user_id: candidateUserId,
+          },
+        });
+      }
+    }
+    return {
+      started_at: attempt.started_at,
+      time_limit_seconds: assessment.time_limit_minutes * 60,
+      remaining_seconds: this.remainingSeconds(
+        attempt.started_at,
+        assessment.time_limit_minutes,
+      ),
+    };
   }
 
   async submitAssessment(
@@ -895,6 +1538,8 @@ export class EmployerAssessmentsService {
       );
     }
 
+    await this.assertInvitedToInternal(assessment, candidateUserId);
+
     // Prevent duplicate submissions
     const existing = await this.submissionRepo.findOne({
       where: {
@@ -910,6 +1555,25 @@ export class EmployerAssessmentsService {
     const score = this.computeScore(assessment.questions, dto.answers ?? {});
     const passed = score >= assessment.passing_threshold;
 
+    // Prefer the server clock; fall back to the client value for candidates
+    // who never hit the start endpoint (older clients).
+    const attempt = await this.attemptRepo.findOne({
+      where: {
+        assessment_id: assessment.id,
+        candidate_user_id: candidateUserId,
+      },
+    });
+    const elapsed = attempt
+      ? this.elapsedSeconds(attempt.started_at)
+      : dto.timeTakenSeconds;
+    const integrity = evaluateIntegrity({
+      events: dto.integrity,
+      elapsedSeconds: elapsed,
+      timeLimitSeconds: assessment.time_limit_minutes * 60,
+      questionCount: assessment.questions.length,
+      sharedNetwork: false,
+    });
+
     let submission: EmployerAssessmentSubmission;
     let updatedOffers: OfferNotificationRow[];
     try {
@@ -919,9 +1583,11 @@ export class EmployerAssessmentsService {
           candidate_user_id: candidateUserId,
           score,
           passed,
-          time_taken_seconds: dto.timeTakenSeconds,
+          time_taken_seconds: elapsed,
           delivery_mode: dto.deliveryMode,
           answers: dto.answers ?? null,
+          integrity,
+          integrity_level: integrity.level,
         } as Partial<EmployerAssessmentSubmission>);
 
         const offers = await this.updateLinkedOffersInTx(
@@ -1064,11 +1730,125 @@ export class EmployerAssessmentsService {
     }
   }
 
+  private async loadResultRows(
+    assessmentId: string,
+  ): Promise<AssessmentResultRow[]> {
+    const [internal, external] = await Promise.all([
+      this.submissionRepo.find({
+        where: { assessment_id: assessmentId },
+        relations: ['candidate'],
+      }),
+      this.externalSubmissionRepo.find({
+        where: { assessment_id: assessmentId },
+        relations: ['external_applicant'],
+      }),
+    ]);
+
+    // Matched on verified email only, so nobody can claim a result by typing
+    // someone else's address into a signup form.
+    const takerEmails = external
+      .map((submission) => submission.external_applicant?.email?.toLowerCase())
+      .filter((email): email is string => !!email);
+    const joined = takerEmails.length
+      ? await this.userRepo
+          .createQueryBuilder('user')
+          .select(['user.id', 'user.email'])
+          .where('LOWER(user.email) IN (:...takerEmails)', { takerEmails })
+          .andWhere('user.is_verified = true')
+          .andWhere('user.role = :role', { role: UserRole.TALENT })
+          .getMany()
+      : [];
+    const joinedByEmail = new Map(
+      joined.map((user) => [user.email.toLowerCase(), user.id]),
+    );
+
+    const rows: Omit<AssessmentResultRow, 'rank' | 'percentile'>[] = [
+      ...internal.map((submission) => ({
+        id: submission.id,
+        source: 'talent' as const,
+        candidateUserId: submission.candidate_user_id,
+        candidateName: submission.candidate
+          ? `${submission.candidate.first_name ?? ''} ${
+              submission.candidate.last_name ?? ''
+            }`.trim() || null
+          : null,
+        email: null,
+        score: submission.score,
+        status: submission.passed ? ('pass' as const) : ('fail' as const),
+        timeTakenSeconds: submission.time_taken_seconds,
+        dateCompleted: submission.completed_at,
+        deliveryMode: submission.delivery_mode,
+        integrityLevel: submission.integrity_level ?? null,
+        integrityReasons: submission.integrity?.reasons ?? [],
+        joinedSkillsiftUserId: null,
+      })),
+      ...external.map((submission) => ({
+        id: submission.id,
+        source: 'external' as const,
+        candidateUserId: null,
+        candidateName: submission.external_applicant?.full_name ?? null,
+        email: submission.external_applicant?.email ?? null,
+        score: submission.score,
+        status: submission.passed ? ('pass' as const) : ('fail' as const),
+        timeTakenSeconds: submission.time_taken_seconds ?? null,
+        dateCompleted: submission.submitted_at,
+        deliveryMode: 'link',
+        integrityLevel: submission.integrity_level ?? null,
+        integrityReasons: submission.integrity?.reasons ?? [],
+        joinedSkillsiftUserId:
+          joinedByEmail.get(
+            (submission.external_applicant?.email ?? '').toLowerCase(),
+          ) ?? null,
+      })),
+    ];
+
+    const total = rows.length;
+    return rows.map((row) => {
+      const higher = rows.filter((other) => other.score > row.score).length;
+      const lower = rows.filter((other) => other.score < row.score).length;
+      return {
+        ...row,
+        rank: higher + 1,
+        percentile: total >= 3 ? Math.round((lower / (total - 1)) * 100) : null,
+      };
+    });
+  }
+
+  private summarizeResults(
+    rows: AssessmentResultRow[],
+  ): AssessmentResultsSummary {
+    if (rows.length === 0) {
+      return {
+        total: 0,
+        averageScore: null,
+        medianScore: null,
+        topScore: null,
+        passRate: null,
+      };
+    }
+    const scores = rows.map((row) => row.score).sort((a, b) => a - b);
+    const mid = Math.floor(scores.length / 2);
+    const median =
+      scores.length % 2 === 0
+        ? (scores[mid - 1] + scores[mid]) / 2
+        : scores[mid];
+    const passed = rows.filter((row) => row.status === 'pass').length;
+    return {
+      total: rows.length,
+      averageScore: Math.round(
+        scores.reduce((sum, score) => sum + score, 0) / scores.length,
+      ),
+      medianScore: Math.round(median),
+      topScore: scores[scores.length - 1],
+      passRate: Math.round((passed / rows.length) * 100),
+    };
+  }
+
   async listResults(
     employerUserId: string,
     assessmentId: string,
     query: ListEmployerAssessmentResultsQueryDto,
-  ) {
+  ): Promise<AssessmentListResultsResponse> {
     await this.ensureVerifiedEmployer(employerUserId);
     const assessment = await this.assessmentRepo.findOne({
       where: { id: assessmentId, employer_user_id: employerUserId },
@@ -1079,42 +1859,102 @@ export class EmployerAssessmentsService {
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const where: Record<string, unknown> = { assessment_id: assessmentId };
-    if (query.status) {
-      where.passed = query.status === 'pass';
-    }
+    const all = await this.loadResultRows(assessmentId);
+    const summary = this.summarizeResults(all);
 
-    const [submissions, total] = await this.submissionRepo.findAndCount({
-      where,
-      relations: ['candidate'],
-      order: { completed_at: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const filtered = all
+      .filter((row) => !query.status || row.status === query.status)
+      .filter((row) => !query.source || row.source === query.source);
 
+    const byDate = (a: AssessmentResultRow, b: AssessmentResultRow) =>
+      new Date(b.dateCompleted).getTime() - new Date(a.dateCompleted).getTime();
+    filtered.sort(
+      query.sort === 'date'
+        ? byDate
+        : (a, b) => b.score - a.score || byDate(a, b),
+    );
+
+    const total = filtered.length;
     return {
-      submissions: submissions.map((submission) => ({
-        id: submission.id,
-        candidateUserId: submission.candidate_user_id,
-        candidateName: submission.candidate
-          ? `${submission.candidate.first_name ?? ''} ${
-              submission.candidate.last_name ?? ''
-            }`.trim()
-          : null,
-        score: submission.score,
-        status: submission.passed ? 'pass' : 'fail',
-        timeTakenSeconds: submission.time_taken_seconds,
-        dateCompleted: submission.completed_at,
-        deliveryMode: submission.delivery_mode,
-      })),
+      submissions: filtered.slice((page - 1) * limit, page * limit),
+      summary,
       total,
       page,
       limit,
       totalPages: Math.ceil(total / limit),
       emptyState:
-        total === 0
+        all.length === 0
           ? 'No submissions yet. Share your assessment link or send it to candidates to get started.'
           : null,
+    };
+  }
+
+  async getResultDetail(
+    employerUserId: string,
+    assessmentId: string,
+    submissionId: string,
+  ): Promise<AssessmentResultDetail> {
+    await this.ensureVerifiedEmployer(employerUserId);
+    const assessment = await this.assessmentRepo.findOne({
+      where: { id: assessmentId, employer_user_id: employerUserId },
+      relations: ['questions'],
+      order: { questions: { position: 'ASC' } },
+    });
+    if (!assessment) {
+      throw new NotFoundError('Assessment not found');
+    }
+
+    const rows = await this.loadResultRows(assessmentId);
+    const row = rows.find((candidate) => candidate.id === submissionId);
+    if (!row) {
+      throw new NotFoundError('Submission not found');
+    }
+
+    let answers: Record<string, unknown> = {};
+    let integrityEvents: IntegrityEvents | null;
+    if (row.source === 'talent') {
+      const submission = await this.submissionRepo.findOne({
+        where: { id: submissionId, assessment_id: assessmentId },
+      });
+      answers = submission?.answers ?? {};
+      integrityEvents = submission?.integrity?.events ?? null;
+    } else {
+      const submission = await this.externalSubmissionRepo.findOne({
+        where: { id: submissionId, assessment_id: assessmentId },
+      });
+      integrityEvents = submission?.integrity?.events ?? null;
+      answers = this.flattenExternalResponses(
+        (submission?.responses ??
+          []) as unknown as SubmitExternalAssessmentDto['responses'],
+      );
+    }
+
+    const isLibrary =
+      assessment.question_source ===
+      EmployerAssessmentQuestionSource.CREDLANE_BANK;
+    const questions = [...(assessment.questions ?? [])]
+      .sort((a, b) => a.position - b.position)
+      .map((question) => {
+        const given = this.normalizeSubmittedAnswer(answers[question.id]);
+        const expected = question.correct_answer.trim().toLowerCase();
+        return {
+          questionId: question.id,
+          position: question.position,
+          questionText: question.question_text,
+          questionType: question.question_type,
+          options: question.options,
+          correctAnswer: isLibrary ? null : question.correct_answer,
+          givenAnswer: given === '' ? null : String(answers[question.id]),
+          isCorrect: given === expected,
+        };
+      });
+
+    return {
+      ...row,
+      questions,
+      correctCount: questions.filter((question) => question.isCorrect).length,
+      questionCount: questions.length,
+      integrityEvents,
     };
   }
 
@@ -1143,7 +1983,6 @@ export class EmployerAssessmentsService {
         'saved.candidate_user_id AS "candidateUserId"',
         'u.first_name AS "firstName"',
         'u.last_name AS "lastName"',
-        'u.email AS "email"',
       ])
       .orderBy('saved.created_at', 'DESC')
       .offset((page - 1) * limit)
@@ -1152,15 +1991,24 @@ export class EmployerAssessmentsService {
         candidateUserId: string;
         firstName: string | null;
         lastName: string | null;
-        email: string;
       }>();
 
+    const unlocked = await this.billingService.getUnlockedIds(
+      employerUserId,
+      rows.map((row) => row.candidateUserId),
+    );
+
     return {
-      candidates: rows.map((row) => ({
-        candidateUserId: row.candidateUserId,
-        fullName: `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim(),
-        email: row.email,
-      })),
+      candidates: rows.map((row) => {
+        const first = row.firstName ?? '';
+        const last = row.lastName ?? '';
+        return {
+          candidateUserId: row.candidateUserId,
+          fullName: unlocked.has(row.candidateUserId)
+            ? `${first} ${last}`.trim()
+            : `${first} ${last ? `${last.charAt(0).toUpperCase()}.` : ''}`.trim(),
+        };
+      }),
       total,
       page,
       limit,
@@ -1173,7 +2021,7 @@ export class EmployerAssessmentsService {
   ): QuestionImportValidationResult {
     if (!file) {
       throw new BadRequestError(
-        "We couldn't read this file. Please use the CredLane template and try again.",
+        "We couldn't read this file. Please use the SkillSift template and try again.",
       );
     }
     if (file.size > EMPLOYER_ASSESSMENT_IMPORT_MAX_FILE_BYTES) {
@@ -1182,7 +2030,7 @@ export class EmployerAssessmentsService {
     const lowerName = file.originalname.toLowerCase();
     if (!lowerName.endsWith('.csv') && !lowerName.endsWith('.xlsx')) {
       throw new BadRequestError(
-        "We couldn't read this file. Please use the CredLane template and try again.",
+        "We couldn't read this file. Please use the SkillSift template and try again.",
       );
     }
     const rows = lowerName.endsWith('.xlsx')
@@ -1190,7 +2038,7 @@ export class EmployerAssessmentsService {
       : this.parseCsv(file.buffer.toString('utf8'));
     if (rows.length < 2) {
       throw new BadRequestError(
-        "We couldn't read this file. Please use the CredLane template and try again.",
+        "We couldn't read this file. Please use the SkillSift template and try again.",
       );
     }
 
@@ -1297,41 +2145,46 @@ export class EmployerAssessmentsService {
   private async buildQuestionsFromCredLaneBank(
     dto: CreateEmployerAssessmentDto,
   ): Promise<EmployerAssessmentQuestionInputDto[]> {
-    const level = this.mapExperienceLevelToVerifiedLevel(dto.experienceLevel);
-    const bankQuestions = await this.bankQuestionRepo.find({
-      where: {
-        assessment_type: AssessmentType.SKILL,
-        track: dto.roleTrack,
-        verified_level: level,
-        is_live: true,
-      },
-      order: { question_number: 'ASC' },
-      take: 10,
+    const libraryQuestions = await this.catalogueQuestionRepo.find({
+      where: { catalogue_assessment_id: dto.credlaneAssessmentId },
+      order: { position: 'ASC' },
     });
 
-    if (bankQuestions.length < MIN_COMPANY_QUESTIONS) {
+    if (libraryQuestions.length < MIN_COMPANY_QUESTIONS) {
       throw new BadRequestError(
-        'Not enough CredLane question bank questions for the selected role track and experience level',
+        'This library assessment does not have enough questions yet',
       );
     }
 
-    return bankQuestions.map((question) => ({
+    const wanted = dto.questionCount ?? libraryQuestions.length;
+    if (wanted > libraryQuestions.length) {
+      throw new BadRequestError(
+        `This library assessment only has ${libraryQuestions.length} questions`,
+      );
+    }
+    // A random selection, kept in the library's order so the test still reads coherently.
+    const selected =
+      wanted === libraryQuestions.length
+        ? libraryQuestions
+        : this.pickRandom(libraryQuestions, wanted).sort(
+            (a, b) => a.position - b.position,
+          );
+
+    return selected.map((question) => ({
       questionText: question.question_text,
-      questionType: this.mapBankQuestionType(question.question_type),
+      questionType: question.question_type,
       options: question.options ?? undefined,
-      correctAnswer: question.correct_answer ?? '',
+      correctAnswer: question.correct_answer,
     }));
   }
 
-  private mapExperienceLevelToVerifiedLevel(
-    level: EmployerAssessmentExperienceLevel,
-  ): VerifiedLevel {
-    const mapping: Record<EmployerAssessmentExperienceLevel, VerifiedLevel> = {
-      [EmployerAssessmentExperienceLevel.JUNIOR]: VerifiedLevel.JUNIOR,
-      [EmployerAssessmentExperienceLevel.MID]: VerifiedLevel.MID,
-      [EmployerAssessmentExperienceLevel.SENIOR]: VerifiedLevel.SENIOR,
-    };
-    return mapping[level];
+  private pickRandom<T>(items: T[], count: number): T[] {
+    const copy = [...items];
+    for (let i = copy.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy.slice(0, count);
   }
 
   private normalizeCompanyQuestions(
@@ -1345,15 +2198,6 @@ export class EmployerAssessmentsService {
         : question.options?.map((option) => option.trim()).filter(Boolean),
       correctAnswer: question.correctAnswer.trim(),
     }));
-  }
-
-  private mapBankQuestionType(
-    questionType: QuestionType,
-  ): EmployerQuestionType {
-    if (questionType === QuestionType.REQUIRED_TEXT) {
-      return EmployerQuestionType.SHORT_ANSWER;
-    }
-    return EmployerQuestionType.MULTIPLE_CHOICE;
   }
 
   private async notifyCandidates(
@@ -1400,7 +2244,7 @@ export class EmployerAssessmentsService {
   private buildShareUrl(token: string): string {
     const baseUrl =
       process.env.FRONTEND_URL?.replace(/\/$/, '') ?? 'https://credlane.com';
-    return `${baseUrl}/assessments/${token}`;
+    return `${baseUrl}/assessment/${token}`;
   }
 
   private parseCsv(csv: string): string[][] {
@@ -1457,7 +2301,7 @@ export class EmployerAssessmentsService {
       return this.parseSheetRows(sheetXml, sharedStrings);
     } catch {
       throw new BadRequestError(
-        "We couldn't read this file. Please use the CredLane template and try again.",
+        "We couldn't read this file. Please use the SkillSift template and try again.",
       );
     }
   }

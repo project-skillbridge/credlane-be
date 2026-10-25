@@ -10,6 +10,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUrl,
   IsUUID,
   Max,
   MaxLength,
@@ -112,7 +113,7 @@ export class CreateOfferDto {
     description: 'Optional interview link included when talent accepts.',
   })
   @IsOptional()
-  @IsString()
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
   @MaxLength(1000)
   interviewLink?: string;
 
